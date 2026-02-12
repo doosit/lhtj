@@ -1,15 +1,15 @@
 /*
 ------------------------------------------
 @Author: Leiyiyan/doosit
-@Date: 2026-02-12 14:24:35
-@Description: 龙湖天街小程序签到
+@Date: 2026-02-12 15:43:38
+@Description: 龙湖天街小程序签到、抽奖
 ------------------------------------------
 获取 Cookie：打开龙湖天街小程序，进入 我的 - 签到赚珑珠 - 任务赚奖励 - 马上签到。
 
 图标：https://raw.githubusercontent.com/leiyiyan/resource/main/icons/lhtj.png
 
 [Script]
-http-request ^https?:\/\/gw2c\-hw\-open\.longfor\.com\/lmarketing\-task\-api\-mvc\-prod\/openapi\/task\/v1\/.* script-path=https://raw.githubusercontent.com/doosit/lhtj/main/lhtj.js, timeout=60, tag=龙湖天街获取Cookie
+http-request ^https?:\/\/gw2c\-hw\-open\.longfor\.com\/(lmarketing\-task\-api\-mvc\-prod\/openapi\/task\/v1\/.*|llt\-gateway\-prod\/api\/v1\/.*|supera\/member\/api\/bff\/pages\/.*) script-path=https://raw.githubusercontent.com/doosit/lhtj/main/lhtj.js, timeout=60, tag=龙湖天街获取Cookie
 
 [MITM]
 hostname = gw2c-hw-open.longfor.com
@@ -38,10 +38,18 @@ $.doFlag = { "true": "✅", "false": "⛔️" };
 const baseUrl = "";
 const _headers = {};
 const TASK_GAIA_KEY = 'c06753f1-3e68-437d-b592-b94656ea5517';
+const LOTTERY_GAIA_KEY = '2f9e3889-91d9-4684-8ff5-24d881438eaf';
 const MEMBER_GAIA_KEY = 'd1eb973c-64ec-4dbe-b23b-22c8117c4e8e';
 const UA_DEFAULT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.69(0x18004526) NetType/WIFI Language/zh_CN miniProgram/wx50282644351869da';
-const SIGN_ACTIVITY_NO = '11111111111686241863606037740000';
-const COOKIE_CAPTURE_URL_REGEX = /\/openapi\/task\/v1\//;
+const SIGN_ACTIVITY_NO_LIST = [
+    '11111111111736501868255956070000',
+    '11111111111686241863606037740000'
+];
+const LOTTERY_PAGE_ACTIVITY_NO = 'AP25Z07390KXCWDP';
+const LOTTERY_PAGE_NO = 'PP11I27P15H4JYOY';
+const LOTTERY_FALLBACK_ACTIVITY_NO = 'AP25K062Q6YYQ7FX';
+const LOTTERY_FALLBACK_COMPONENT_NO = 'CO15400F29R2ZFJZ';
+const COOKIE_CAPTURE_URL_REGEX = /\/(openapi\/task\/v1\/|llt-gateway-prod\/api\/v1\/|supera\/member\/api\/bff\/pages\/)/;
 const RETRY_CODES = new Set(['8040012', '429', '500']);
 const RETRY_MESSAGE_REGEX = /网络故障|请稍后再试|系统繁忙|请求超时|服务繁忙/;
 const AUTH_MESSAGE_REGEX = /登录已过期|用户未登录|token失效|无效token|需要去登录/;
@@ -84,14 +92,22 @@ const fetch = async (o, retryTimes = 2) => {
 };
 
 function normalizeUser(user = {}, index = 1) {
-    const token = user.token || user['x-lf-usertoken'] || '';
+    const token = user.token || user['x-lf-usertoken'] || user.authtoken || '';
     return {
         ...user,
         userName: user.userName || `账号${index}`,
         token,
         'x-lf-usertoken': user['x-lf-usertoken'] || token,
+        'x-lf-bu-code': user['x-lf-bu-code'] || user.bucode || '',
+        'x-lf-channel': user['x-lf-channel'] || user.channel || '',
         'x-lf-dxrisk-source': user['x-lf-dxrisk-source'] || '5',
         'x-gaia-api-key': user['x-gaia-api-key'] || TASK_GAIA_KEY,
+        'x-gaia-api-key-lottery': user['x-gaia-api-key-lottery'] || LOTTERY_GAIA_KEY,
+        'origin-signin': user['origin-signin'] || 'https://longzhu.longfor.com',
+        'referer-signin': user['referer-signin'] || 'https://longzhu.longfor.com/',
+        'origin-lottery': user['origin-lottery'] || 'https://llt.longfor.com',
+        'referer-lottery': user['referer-lottery'] || 'https://llt.longfor.com/',
+        'content-type': user['content-type'] || 'application/json;charset=UTF-8',
         'user-agent': user['user-agent'] || UA_DEFAULT
     };
 }
@@ -105,8 +121,28 @@ function buildTaskHeaders(user, extra = {}) {
         'x-gaia-api-key': user['x-gaia-api-key'] || TASK_GAIA_KEY,
         'x-lf-bu-code': user['x-lf-bu-code'] || '',
         'x-lf-channel': user['x-lf-channel'] || '',
-        'origin': 'https://longzhu.longfor.com',
-        'referer': 'https://longzhu.longfor.com/'
+        'origin': user['origin-signin'] || 'https://longzhu.longfor.com',
+        'referer': user['referer-signin'] || 'https://longzhu.longfor.com/',
+        'content-type': user['content-type'] || 'application/json;charset=UTF-8'
+    };
+    if (user['x-lf-dxrisk-token']) headers['x-lf-dxrisk-token'] = user['x-lf-dxrisk-token'];
+    if (user['x-lf-dxrisk-source']) headers['x-lf-dxrisk-source'] = user['x-lf-dxrisk-source'];
+    if (user['x-lf-dxrisk-captcha-token']) headers['x-lf-dxrisk-captcha-token'] = user['x-lf-dxrisk-captcha-token'];
+    return { ...headers, ...extra };
+}
+
+function buildLotteryHeaders(user, extra = {}) {
+    const headers = {
+        'cookie': user.cookie || '',
+        'user-agent': user['user-agent'] || UA_DEFAULT,
+        'authtoken': user.token || '',
+        'token': user.token || '',
+        'bucode': user['x-lf-bu-code'] || '',
+        'channel': user['x-lf-channel'] || '',
+        'x-gaia-api-key': user['x-gaia-api-key-lottery'] || LOTTERY_GAIA_KEY,
+        'origin': user['origin-lottery'] || 'https://llt.longfor.com',
+        'referer': user['referer-lottery'] || 'https://llt.longfor.com/',
+        'content-type': user['content-type'] || 'application/json;charset=UTF-8'
     };
     if (user['x-lf-dxrisk-token']) headers['x-lf-dxrisk-token'] = user['x-lf-dxrisk-token'];
     if (user['x-lf-dxrisk-source']) headers['x-lf-dxrisk-source'] = user['x-lf-dxrisk-source'];
@@ -168,6 +204,25 @@ function getNowText() {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+function toNonNegativeInt(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return Math.max(0, Math.floor(value));
+    }
+    const text = String(value ?? '');
+    const m = text.match(/\d+/);
+    return m ? Math.max(0, parseInt(m[0], 10)) : 0;
+}
+
+function getLotteryChanceFromRes(res) {
+    return toNonNegativeInt(
+        res?.data?.chance ??
+        res?.data?.ticket_times ??
+        res?.data?.lottery_times ??
+        res?.data?.remain_times ??
+        0
+    );
+}
+
 async function main() {
     try {
         //check accounts
@@ -193,6 +248,20 @@ async function main() {
             let reward_num = 0;
             if ($.ckStatus) reward_num = await signin(user);
             if ($.ckStatus) {
+                // 抽奖签到 + 抽奖
+                let lotteryChance = 0;
+                const lotteryInfo = await getLotteryActivityInfo(user);
+                if (lotteryInfo) {
+                    lotteryChance = await lotterySignin(user, lotteryInfo);
+                    if (lotteryChance > 0) {
+                        for (let i = 0; i < lotteryChance; i++) {
+                            await lotteryDraw(user, lotteryInfo, i + 1);
+                            if (i < lotteryChance - 1) await $.wait(1200);
+                        }
+                    } else {
+                        $.log(`ℹ️ 抽奖机会为0，跳过抽奖\n`);
+                    }
+                }
                 //查询用户信息
                 const userInfo = await getUserInfo(user);
                 //查询珑珠
@@ -202,7 +271,7 @@ async function main() {
                 const level = userInfo?.level || 0;
                 const balance = balanceInfo?.balance || 0;
                 $.avatar = userInfo?.head_portrait || "";
-                $.title = `本次运行共获得${reward_num}积分`;
+                $.title = `本次运行签到${reward_num}分${lotteryChance > 0 ? `, 抽奖${lotteryChance}次` : ''}`;
                 DoubleLog(`当前用户:${nickName}\n成长值: ${growthValue}  等级: V${level}  珑珠: ${balance}`);
             } else {
                 DoubleLog(`⛔️ 「${user.userName}」check ck error!`);
@@ -218,27 +287,148 @@ async function main() {
 //签到
 async function signin(user) {
     try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
-            headers: buildTaskHeaders(user),
-            type: 'post',
-            dataType: "json",
-            body: {
-                'activity_no': SIGN_ACTIVITY_NO
+        for (const activityNo of SIGN_ACTIVITY_NO_LIST) {
+            const opts = {
+                url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
+                headers: buildTaskHeaders(user),
+                type: 'post',
+                dataType: "json",
+                body: {
+                    'activity_no': activityNo
+                }
+            };
+            const res = await fetch(opts);
+            const isPopup = Number(res?.data?.is_popup || 0) === 1;
+            const reward_num = isPopup ? Number(res?.data?.reward_info?.[0]?.reward_num || 0) : 0;
+            const code = String(res?.code || '');
+            const msg = String(res?.message || '');
+            if (code === '0000') {
+                $.log(`${$.doFlag[isPopup]} ${isPopup ? '每日签到: 成功, 获得' + reward_num + '分' : '每日签到: 今日已签到'}\n`);
+                return reward_num;
             }
-        };
-        let res = await fetch(opts);
-        const isPopup = Number(res?.data?.is_popup || 0) === 1;
-        const reward_num = isPopup ? Number(res?.data?.reward_info?.[0]?.reward_num || 0) : 0;
-        if (res?.code === '0000') {
-            $.log(`${$.doFlag[isPopup]} ${isPopup ? '每日签到: 成功, 获得' + reward_num + '分' : '每日签到: 今日已签到'}\n`);
-        } else {
-            $.log(`⛔️ 每日签到: ${res?.message || res?.code || '未知错误'}\n`);
+            if (/activity|活动|参数|不存在|已结束|invalid/i.test(msg) && activityNo !== SIGN_ACTIVITY_NO_LIST[SIGN_ACTIVITY_NO_LIST.length - 1]) {
+                $.log(`⚠️ 签到活动号 ${activityNo} 不可用，尝试下一个...\n`);
+                continue;
+            }
+            $.log(`⛔️ 每日签到: ${msg || code || '未知错误'}\n`);
+            return 0;
         }
-        return reward_num;
+        $.log(`⛔️ 每日签到: 所有活动号均不可用\n`);
+        return 0;
     } catch (e) {
         $.log(`⛔️ 每日签到失败！${e}\n`);
         return 0;
+    }
+}
+
+function parseLotteryComponentNo(info) {
+    const pageInfo = typeof info === 'string' ? $.toObj(info, {}) : (info || {});
+    const list = Array.isArray(pageInfo?.list) ? pageInfo.list : [];
+    for (const component of list) {
+        if (component?.comName === 'turntablecom' && component?.data?.component_no) {
+            return component.data.component_no;
+        }
+    }
+    return '';
+}
+
+async function getLotteryActivityInfo(user) {
+    try {
+        const opts = {
+            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/page/info",
+            headers: buildLotteryHeaders(user),
+            type: 'get',
+            dataType: "json",
+            params: {
+                activityNo: LOTTERY_PAGE_ACTIVITY_NO,
+                pageNo: LOTTERY_PAGE_NO
+            }
+        };
+        const res = await fetch(opts);
+        if (res?.code === '0000') {
+            const activityNo = res?.data?.activity_no || LOTTERY_PAGE_ACTIVITY_NO;
+            const componentNo = parseLotteryComponentNo(res?.data?.info);
+            if (activityNo && componentNo) {
+                $.log(`✅ 抽奖活动识别成功\n`);
+                return { activity_no: activityNo, component_no: componentNo };
+            }
+        }
+        if (LOTTERY_FALLBACK_ACTIVITY_NO && LOTTERY_FALLBACK_COMPONENT_NO) {
+            $.log(`⚠️ 抽奖活动识别失败，使用回退活动配置\n`);
+            return { activity_no: LOTTERY_FALLBACK_ACTIVITY_NO, component_no: LOTTERY_FALLBACK_COMPONENT_NO };
+        }
+        $.log(`⛔️ 抽奖活动识别失败\n`);
+        return null;
+    } catch (e) {
+        $.log(`⛔️ 抽奖活动识别失败: ${e}\n`);
+        return null;
+    }
+}
+
+async function lotterySignin(user, lotteryInfo) {
+    if (!lotteryInfo?.activity_no || !lotteryInfo?.component_no) return 0;
+    try {
+        const opts = {
+            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/sign",
+            headers: buildLotteryHeaders(user),
+            type: 'post',
+            dataType: "json",
+            body: {
+                component_no: lotteryInfo.component_no,
+                activity_no: lotteryInfo.activity_no
+            }
+        };
+        const res = await fetch(opts);
+        const code = String(res?.code || '');
+        const msg = String(res?.message || '');
+        const chance = getLotteryChanceFromRes(res);
+        if (code === '0000') {
+            $.log(`✅ 抽奖签到: 成功, 当前可抽奖${chance}次\n`);
+            return chance;
+        }
+        if (code === '863036' || /已签到/.test(msg)) {
+            $.log(`✅ 抽奖签到: 今日已签到, 当前可抽奖${chance}次\n`);
+            return chance;
+        }
+        $.log(`⛔️ 抽奖签到: ${msg || code || '未知错误'}\n`);
+        return 0;
+    } catch (e) {
+        $.log(`⛔️ 抽奖签到失败！${e}\n`);
+        return 0;
+    }
+}
+
+async function lotteryDraw(user, lotteryInfo, round = 1) {
+    if (!lotteryInfo?.activity_no || !lotteryInfo?.component_no) return false;
+    try {
+        const opts = {
+            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/click",
+            headers: buildLotteryHeaders(user),
+            type: 'post',
+            dataType: "json",
+            body: {
+                component_no: lotteryInfo.component_no,
+                activity_no: lotteryInfo.activity_no,
+                batch_no: ""
+            }
+        };
+        const res = await fetch(opts);
+        const code = String(res?.code || '');
+        const msg = String(res?.message || '');
+        if (code === '0000') {
+            const prize = res?.data?.prize_name || res?.data?.desc || `类型${res?.data?.reward_type || '-'} x${res?.data?.reward_num || '-'}`;
+            $.log(`✅ 第${round}次抽奖: ${prize}\n`);
+            return true;
+        }
+        if (code === '863033' || /已抽奖/.test(msg)) {
+            $.log(`✅ 第${round}次抽奖: 今日已抽奖\n`);
+            return false;
+        }
+        $.log(`⛔️ 第${round}次抽奖: ${msg || code || '未知错误'}\n`);
+        return false;
+    } catch (e) {
+        $.log(`⛔️ 第${round}次抽奖失败: ${e}\n`);
+        return false;
     }
 }
 //查询用户信息
@@ -300,30 +490,51 @@ async function getBalance(user) {
 async function getCookie() {
     try {
         if (!$request) return;
-        if (String($request.method).toUpperCase() === 'OPTIONS') return;
-        if (!COOKIE_CAPTURE_URL_REGEX.test(String($request.url || ''))) return;
+        const method = String($request.method || '').toUpperCase();
+        const requestUrl = String($request.url || '');
+        if (method === 'OPTIONS') return;
+        if (!COOKIE_CAPTURE_URL_REGEX.test(requestUrl)) return;
+        const isLotteryUrl = /\/llt-gateway-prod\/api\/v1\//.test(requestUrl);
+        const isSignUrl = /\/openapi\/task\/v1\//.test(requestUrl);
+        const isSuperaUrl = /\/supera\/member\/api\/bff\/pages\//.test(requestUrl);
 
         const header = ObjectKeys2LowerCase($request?.headers || {});
-        const token = pickFirstNonEmpty(header.token, header['x-lf-usertoken']);
+        const token = pickFirstNonEmpty(
+            header.token,
+            header['x-lf-usertoken'],
+            header.authtoken,
+            header.lmtoken
+        );
         if (!token) {
             $.log(`⚠️ 当前请求未携带token，跳过更新`);
             return;
         }
 
-        const newData = normalizeUser({
+        const buCode = pickFirstNonEmpty(header['x-lf-bu-code'], header.bucode);
+        const channel = pickFirstNonEmpty(header['x-lf-channel'], header.channel);
+        const incomingGaiaKey = toCleanStr(header['x-gaia-api-key']);
+        const incomingOrigin = toCleanStr(header.origin);
+        const incomingReferer = toCleanStr(header.referer);
+        const newData = {
             "userName": '微信用户',
             'x-lf-dxrisk-token': toCleanStr(header['x-lf-dxrisk-token']),
             'x-lf-dxrisk-captcha-token': toCleanStr(header['x-lf-dxrisk-captcha-token']),
-            "x-lf-channel": toCleanStr(header['x-lf-channel']),
+            "x-lf-channel": channel,
             "token": token,
             'x-lf-usertoken': pickFirstNonEmpty(header['x-lf-usertoken'], token),
             "cookie": toCleanStr(header.cookie),
-            "x-lf-bu-code": toCleanStr(header['x-lf-bu-code']),
+            "x-lf-bu-code": buCode,
             'x-lf-dxrisk-source': pickFirstNonEmpty(header['x-lf-dxrisk-source'], '5'),
-            'x-gaia-api-key': pickFirstNonEmpty(header['x-gaia-api-key'], TASK_GAIA_KEY),
+            'x-gaia-api-key': isSignUrl ? pickFirstNonEmpty(incomingGaiaKey, TASK_GAIA_KEY) : '',
+            'x-gaia-api-key-lottery': isLotteryUrl ? pickFirstNonEmpty(incomingGaiaKey, LOTTERY_GAIA_KEY) : '',
+            'origin-signin': isSignUrl ? pickFirstNonEmpty(incomingOrigin, 'https://longzhu.longfor.com') : '',
+            'referer-signin': isSignUrl ? pickFirstNonEmpty(incomingReferer, 'https://longzhu.longfor.com/') : '',
+            'origin-lottery': isLotteryUrl ? pickFirstNonEmpty(incomingOrigin, 'https://llt.longfor.com') : '',
+            'referer-lottery': isLotteryUrl ? pickFirstNonEmpty(incomingReferer, 'https://llt.longfor.com/') : '',
             'user-agent': pickFirstNonEmpty(header['user-agent'], UA_DEFAULT),
+            'capture-from': isSuperaUrl ? 'supera' : (isLotteryUrl ? 'lottery' : 'task'),
             'update-time': getNowText()
-        });
+        };
 
         const index = userCookie.findIndex(e => (e?.token || e?.['x-lf-usertoken']) == newData.token);
         if (index !== -1) {
@@ -339,7 +550,7 @@ async function getCookie() {
             return;
         }
 
-        userCookie.push(newData);
+        userCookie.push(normalizeUser(newData, userCookie.length + 1));
         $.setjson(userCookie, ckName);
         $.msg($.name, `🎉获取Cookie成功!`, `新增账号: ${newData.userName}`);
     } catch (e) {
