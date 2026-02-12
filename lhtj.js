@@ -1,7 +1,7 @@
 /*
 ------------------------------------------
 @Author: Leiyiyan
-@Date: 2024-10-08 11:25:00
+@Date: 2026-02-12 14:24:35
 @Description: 龙湖天街小程序签到
 ------------------------------------------
 获取 Cookie：打开龙湖天街小程序，进入 我的 - 签到赚珑珠 - 任务赚奖励 - 马上签到。
@@ -9,7 +9,7 @@
 图标：https://raw.githubusercontent.com/leiyiyan/resource/main/icons/lhtj.png
 
 [Script]
-http-request ^https?:\/\/gw2c\-hw\-open\.longfor\.com\/lmarketing\-task\-api\-mvc\-prod\/openapi\/task\/v1\/signature\/clock script-path=https://raw.githubusercontent.com/leiyiyan/resource/main/script/lhtj/lhtj.js, timeout=60, tag=龙湖天街获取Cookie
+http-request ^https?:\/\/gw2c\-hw\-open\.longfor\.com\/lmarketing\-task\-api\-mvc\-prod\/openapi\/task\/v1\/.* script-path=https://raw.githubusercontent.com/doosit/lhtj/main/lhtj.js, timeout=60, tag=龙湖天街获取Cookie
 
 [MITM]
 hostname = gw2c-hw-open.longfor.com
@@ -41,6 +41,7 @@ const TASK_GAIA_KEY = 'c06753f1-3e68-437d-b592-b94656ea5517';
 const MEMBER_GAIA_KEY = 'd1eb973c-64ec-4dbe-b23b-22c8117c4e8e';
 const UA_DEFAULT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.69(0x18004526) NetType/WIFI Language/zh_CN miniProgram/wx50282644351869da';
 const SIGN_ACTIVITY_NO = '11111111111686241863606037740000';
+const COOKIE_CAPTURE_URL_REGEX = /\/openapi\/task\/v1\//;
 const RETRY_CODES = new Set(['8040012', '429', '500']);
 const RETRY_MESSAGE_REGEX = /网络故障|请稍后再试|系统繁忙|请求超时|服务繁忙/;
 const AUTH_MESSAGE_REGEX = /登录已过期|用户未登录|token失效|无效token|需要去登录/;
@@ -131,6 +132,40 @@ function getMissingFields(user) {
         ['x-lf-channel', user['x-lf-channel']]
     ];
     return required.filter(([, value]) => !value).map(([key]) => key);
+}
+
+function toCleanStr(value) {
+    if (Array.isArray(value)) value = value[0];
+    if (value === undefined || value === null) return '';
+    return String(value).trim();
+}
+
+function pickFirstNonEmpty(...values) {
+    for (const value of values) {
+        const clean = toCleanStr(value);
+        if (clean) return clean;
+    }
+    return '';
+}
+
+function mergeNonEmpty(oldData = {}, newData = {}) {
+    const merged = { ...oldData };
+    for (const [key, value] of Object.entries(newData)) {
+        const clean = toCleanStr(value);
+        if (clean) merged[key] = clean;
+    }
+    return merged;
+}
+
+function getNowText() {
+    const date = new Date();
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 async function main() {
@@ -264,31 +299,49 @@ async function getBalance(user) {
 //获取Cookie
 async function getCookie() {
     try {
-        if ($request && String($request.method).toUpperCase() === 'OPTIONS') return;
+        if (!$request) return;
+        if (String($request.method).toUpperCase() === 'OPTIONS') return;
+        if (!COOKIE_CAPTURE_URL_REGEX.test(String($request.url || ''))) return;
 
         const header = ObjectKeys2LowerCase($request?.headers || {});
-        if (!header.cookie) throw new Error("获取Cookie错误，值为空");
-        const token = header.token || header['x-lf-usertoken'];
-        if (!token) throw new Error("获取Cookie错误，token为空");
+        const token = pickFirstNonEmpty(header.token, header['x-lf-usertoken']);
+        if (!token) {
+            $.log(`⚠️ 当前请求未携带token，跳过更新`);
+            return;
+        }
 
         const newData = normalizeUser({
             "userName": '微信用户',
-            'x-lf-dxrisk-token': header['x-lf-dxrisk-token'] || '',
-            'x-lf-dxrisk-captcha-token': header['x-lf-dxrisk-captcha-token'] || '',
-            "x-lf-channel": header['x-lf-channel'],
+            'x-lf-dxrisk-token': toCleanStr(header['x-lf-dxrisk-token']),
+            'x-lf-dxrisk-captcha-token': toCleanStr(header['x-lf-dxrisk-captcha-token']),
+            "x-lf-channel": toCleanStr(header['x-lf-channel']),
             "token": token,
-            'x-lf-usertoken': header['x-lf-usertoken'] || token,
-            "cookie": header.cookie,
-            "x-lf-bu-code": header['x-lf-bu-code'],
-            'x-lf-dxrisk-source': header['x-lf-dxrisk-source'] || '5',
-            'x-gaia-api-key': header['x-gaia-api-key'] || TASK_GAIA_KEY,
-            'user-agent': header['user-agent'] || UA_DEFAULT
+            'x-lf-usertoken': pickFirstNonEmpty(header['x-lf-usertoken'], token),
+            "cookie": toCleanStr(header.cookie),
+            "x-lf-bu-code": toCleanStr(header['x-lf-bu-code']),
+            'x-lf-dxrisk-source': pickFirstNonEmpty(header['x-lf-dxrisk-source'], '5'),
+            'x-gaia-api-key': pickFirstNonEmpty(header['x-gaia-api-key'], TASK_GAIA_KEY),
+            'user-agent': pickFirstNonEmpty(header['user-agent'], UA_DEFAULT),
+            'update-time': getNowText()
         });
 
         const index = userCookie.findIndex(e => (e?.token || e?.['x-lf-usertoken']) == newData.token);
-        index !== -1 ? userCookie[index] = { ...userCookie[index], ...newData } : userCookie.push(newData);
+        if (index !== -1) {
+            userCookie[index] = normalizeUser(mergeNonEmpty(userCookie[index], newData), index + 1);
+            $.setjson(userCookie, ckName);
+            $.msg($.name, `🎉更新Cookie成功!`, `账号: ${userCookie[index].userName}`);
+            return;
+        }
+
+        const missingForNew = ['cookie', 'x-lf-bu-code', 'x-lf-channel'].filter(k => !newData[k]);
+        if (missingForNew.length) {
+            $.log(`⚠️ 新账号抓取字段不完整，缺少: ${missingForNew.join(', ')}，已跳过保存`);
+            return;
+        }
+
+        userCookie.push(newData);
         $.setjson(userCookie, ckName);
-        $.msg($.name, `🎉获取Cookie成功!`, ``);
+        $.msg($.name, `🎉获取Cookie成功!`, `新增账号: ${newData.userName}`);
     } catch (e) {
         throw e;
     }
