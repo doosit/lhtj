@@ -81,11 +81,15 @@ async function main() {
             userCookie = cleanedUsers;
             saveUserCookies();
         }
+        const runnableUsers = userCookie.filter(isUsableUser);
         //check accounts
-        if (!userCookie?.length) throw new Error("找不到可用的帐户");
-        $.log(`⚙️ 发现 ${userCookie?.length ?? 0} 个帐户\n`);
+        if (!runnableUsers?.length) {
+            if (userCookie.length) throw new Error("已捕获到未完整的Cookie信息，请重新打开签到页触发相关请求以补全Cookie");
+            throw new Error("找不到可用的帐户");
+        }
+        $.log(`⚙️ 发现 ${runnableUsers?.length ?? 0} 个可用帐户\n`);
         //doTask of userList
-        const users = [...userCookie];
+        const users = [...runnableUsers];
         for (const [index, user] of users.entries()) {
             //init of user
             $.log(`🚀 开始任务：${user.userName || `账号${index + 1}`}`);
@@ -457,7 +461,7 @@ async function getCookie() {
         if ($request && $request.method === 'OPTIONS') return;
 
         const header = ObjectKeys2LowerCase($request.headers || {});
-        if (!header.cookie) throw new Error("获取Cookie错误，值为空");
+        if (!header.cookie) return;
 
         const capturedAt = nowIso();
         const newData = {
@@ -475,13 +479,14 @@ async function getCookie() {
             "updatedAt": capturedAt,
             "lastCaptureAt": capturedAt
         };
-        const missingFields = getMissingCaptureFields(newData);
-        if (missingFields.length) {
-            throw new Error(`获取Cookie失败，缺少字段：${missingFields.join(", ")}`);
-        }
-
         const result = upsertUserCookie(newData);
-        $.msg($.name, `🎉 ${result.action}Cookie成功!`, `当前共保存 ${result.total} 个账号`);
+        const subtitle = result.ready
+            ? `🎉 ${result.action}Cookie成功!`
+            : `⚠️ ${result.action}部分Cookie成功`;
+        const content = result.ready
+            ? `当前共保存 ${result.total} 个可用账号`
+            : `已暂存账号信息，仍缺少字段：${result.missingFields.join(", ")}`;
+        $.msg($.name, subtitle, content);
     } catch (e) {
         throw e;
     }
@@ -506,9 +511,7 @@ function saveUserCookies() {
 
 function upsertUserCookie(data) {
     const normalized = normalizeUserRecord(data);
-    if (!normalized || !isUsableUser(normalized)) {
-        throw new Error("获取Cookie失败，账号数据不完整");
-    }
+    if (!normalized) throw new Error("获取Cookie失败，账号数据为空");
 
     const index = findExistingUserIndex(userCookie, normalized);
     const action = index === -1 ? "新增" : "更新";
@@ -520,7 +523,14 @@ function upsertUserCookie(data) {
     }
 
     saveUserCookies();
-    return { action, total: userCookie.length };
+    const mergedRecord = index === -1 ? userCookie[userCookie.length - 1] : userCookie[index];
+    const missingFields = getMissingCaptureFields(mergedRecord);
+    return {
+        action,
+        total: userCookie.filter(isUsableUser).length,
+        ready: missingFields.length === 0,
+        missingFields
+    };
 }
 
 function updateUserRecord(user, patch = {}) {
@@ -558,7 +568,7 @@ function dedupeUsers(list = []) {
             merged[index] = mergeUserRecords(merged[index], normalized);
         }
     }
-    return merged.filter(isUsableUser);
+    return merged;
 }
 
 function normalizeUserRecord(record = {}) {
@@ -859,7 +869,7 @@ function maskPhone(value) {
 })()
     .catch((e) => { $.logErr(e), $.msg($.name, `⛔️ script run error!`, e.message || e) })
     .finally(async () => {
-        $.done({ ok: 1 });
+        $.done({});
     });
 function getDateTime() {
     const date = new Date();
