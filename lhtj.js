@@ -49,7 +49,7 @@ const SLIDER_JSV = "1.3.41.372";
 const JPEG_SCALE = 1;                 // 原尺寸还原列置换，与 PNG 拼图保持同一坐标系
 const CAPTCHA_TTL = 180000;           // 缓存的 captcha token 有效期 ms
 
-const RISK_CODES = ["4011", "4012", "4007", "8040012", "8040011", "4010"];
+const RISK_CODES = ["862101", "4011", "4012", "4007", "8040012", "8040011", "4010"];
 const RISK_PATTERN = /(风控|验证码|需要验证|验证失败|risk|captcha|拦截)/i;
 const EXPIRED_PATTERN = /登录已过期|用户未登录|登录失效|token(?:已)?失效|请重新登录|请登录|未授权/i;
 const REQUIRED_FIELDS = ["cookie", "token", "x-lf-dxrisk-token", "x-lf-channel", "x-lf-usertoken", "x-lf-bu-code", "x-lf-dxrisk-source"];
@@ -1094,7 +1094,7 @@ async function solveBySolver(solverUrl, log) {
     });
     if (!res) { log("滑块：外部服务无响应"); return ""; }
     let token = str(res.token || res.data || res.captchaToken);
-    if (!token) { log("滑块：外部服务返回无效：" + $.toStr(res).slice(0, 120)); return ""; }
+    if (!token) { log("滑块：外部服务返回无效"); return ""; }
     if (token.indexOf(":") < 0) token = token + ":" + str(res.c || constId);
     log("滑块：外部服务返回 token 成功");
     return token;
@@ -1335,6 +1335,36 @@ function isRisk(obj) {
 function msgOf(obj) { return obj ? String(obj.message || obj.msg || obj.code || "") : ""; }
 
 // 本次微信 H5 抓包：C2 / C20400 / 风控来源 5；不改变 APP 分支。
+function createCaptchaSession(u, initialToken, solver) {
+  return { token: initialToken || "", attempted: false, pending: null,
+    async refresh(rejectedToken) {
+      if ($.ckExpired) return "";
+      if (this.token && this.token !== rejectedToken) return this.token;
+      if (this.pending) return this.pending;
+      if (this.attempted) return "";
+      this.attempted = true;
+      this.pending = (async () => {
+        const fresh = await (solver ? solver() : solveSlider(log));
+        if (!fresh || fresh === rejectedToken) return "";
+        this.token = fresh;
+        saveCaptchaToken(u, fresh);
+        return fresh;
+      })();
+      try { return await this.pending; } finally { this.pending = null; }
+    }
+  };
+}
+async function requestWithCaptcha(options, headersForToken, session, fallbackToken) {
+  const sentToken = session ? session.token : (fallbackToken || "");
+  let response = await apiRequest(Object.assign({}, options, { headers: headersForToken(sentToken) }));
+  if (!session || !isRisk(response) || $.ckExpired) return response;
+  const fresh = await session.refresh(sentToken);
+  if (fresh && fresh !== sentToken) {
+    response = await apiRequest(Object.assign({}, options, { headers: headersForToken(fresh) }));
+  }
+  return response;
+}
+
 function signatureHeaders(u, activityNo, captchaToken) {
   return taskHeaders(u, activityNo === ACTIVITY_SIGN_WX ? {
     "x-lf-channel": "C2", "x-lf-bu-code": "C20400", "x-lf-dxrisk-source": "5"
@@ -1370,8 +1400,8 @@ function receivedRewardText(info) {
 async function doWxSignin(u, label, captchaToken) {
   const result = (status, message, reward, risk) => {
     const line = label + "：" + message;
-    log(line); $.notifyMsg.push(line);
-    return { status: status, reward: reward || 0, risk: !!risk };
+    log(line);
+    return { status: status, message: message, reward: reward || 0, risk: !!risk };
   };
   const info = await pageInfo(u, ACTIVITY_SIGN_WX, captchaToken);
   if (info && info.risk) return result("risk", "需要验证", 0, true);
@@ -1402,10 +1432,10 @@ async function doWxSignin(u, label, captchaToken) {
 
 /** 签到页信息 */
 async function pageInfo(u, activityNo, captchaToken) {
-  const res = await apiRequest({
+  const res = await requestWithCaptcha({
     url: HOST_TASK + "/openapi/task/v1/signature/page-info",
-    method: "POST", headers: signatureHeaders(u, activityNo, captchaToken), body: { activity_no: activityNo },
-  });
+    method: "POST", body: { activity_no: activityNo },
+  }, (token) => signatureHeaders(u, activityNo, token), $.captchaSession, captchaToken);
   if (isRisk(res)) return { risk: true };
   return res && String(res.code) === "0000" ? res.data : null;
 }
@@ -1433,10 +1463,10 @@ function describeSign(info, label) {
 
 /** 签到 */
 async function doClock(u, activityNo, label, captchaToken) {
-  const res = await apiRequest({
+  const res = await requestWithCaptcha({
     url: HOST_TASK + "/openapi/task/v1/signature/clock",
-    method: "POST", headers: signatureHeaders(u, activityNo, captchaToken), body: { activity_no: activityNo },
-  });
+    method: "POST", body: { activity_no: activityNo },
+  }, (token) => signatureHeaders(u, activityNo, token), $.captchaSession, captchaToken);
   if (!res) return 0;
   if (isRisk(res)) return -1;
   if (String(res.code) !== "0000") { log($.doFlag[false] + " " + label + "：" + msgOf(res)); return 0; }
@@ -1466,20 +1496,17 @@ async function doClock(u, activityNo, label, captchaToken) {
 /** 每个渠道仅处理指定活动号。 */
 async function doSignin(u, label, captchaToken, activityNo) {
   if (!activityNo || activityNo === ACTIVITY_SIGN_WX) return doWxSignin(u, label, captchaToken);
-  const acts = [activityNo];
-  let reward = 0;
-  for (let i = 0; i < acts.length; i++) {
-    const info = await pageInfo(u, acts[i], captchaToken);
-    if (info && info.risk) return { reward: reward, risk: true };
-    if (!info) { log("⛔️ " + label + "：签到状态查询失败"); continue; }
-    log("ℹ️ " + describeSign(info, label));
-    if (signedToday(info)) { log($.doFlag[true] + " " + label + "：今日已签到"); continue; }
-    const r = await doClock(u, acts[i], label, captchaToken);
-    if (r < 0) { log("🛡️ " + label + "：触发风控"); return { reward: reward, risk: true }; }
-    reward += r;
-    if (r > 0) return { reward: reward, risk: false };
-  }
-  return { reward: reward, risk: false };
+  const info = await pageInfo(u, activityNo, captchaToken);
+  if (info && info.risk) return { risk: true, message: "需要验证" };
+  if (!info) return { status: "unknown", message: "状态查询失败" };
+  if (signedToday(info)) return { status: "already", message: "今日已签到", reward: 0 };
+  const reward = await doClock(u, activityNo, label, captchaToken);
+  if (reward < 0) return { risk: true, message: "需要验证" };
+  if (reward > 0) return { status: "signed", message: "签到成功，新增奖励见汇总", reward: reward };
+  const after = await pageInfo(u, activityNo, captchaToken);
+  if (after && after.risk) return { risk: true, message: "状态复查需要验证" };
+  return signedToday(after) ? { status: "confirmed", message: "今日已签到（复查确认）", reward: 0 } :
+    { status: "unknown", message: "未确认签到成功，未重复提交", reward: 0 };
 }
 
 /**
@@ -1497,7 +1524,7 @@ async function doSignin(u, label, captchaToken, activityNo) {
  * captcha token 形如 "<验证token>:<constid>"，由 solveSlider() 产出；
  * 复用脚本既有的滑块实现与缓存（lhtj_captcha_token_*），无需改动。
  */
-async function doLottery(u, componentNo, activityNo, label, captchaToken) {
+async function doLottery(u, componentNo, activityNo, label, captchaToken, refreshCaptcha) {
   const override = $.getdata("lhtj_activity_app");
   const base = override ? override.split(",") : [activityNo].concat(ACTIVITY_CANDIDATES_APP);
   const candidates = [];
@@ -1506,43 +1533,16 @@ async function doLottery(u, componentNo, activityNo, label, captchaToken) {
 
   let risk = false;
   let lastMsg = "";
-  let cap = captchaToken || "";
-
-  // 需要验证时重新求一次 captcha token（每账号最多一次）
-  let solverTried = !!cap;
-  const needCaptcha = async () => {
-    if (solverTried) return cap;
-    solverTried = true;
-    const t = await solveSlider(log);
-    if (t) { cap = t; saveCaptchaToken(u, t); log("🔑 已获取 captcha token"); }
-    else log("⛔️ 滑块未通过，继续尝试（可能被风控拦截）");
-    return cap;
-  };
-
-  /** 带风控重试的请求：862101 -> 解滑块 -> 用新 token 重试一次 */
-  const callWithCaptcha = async (url, method, body) => {
-    let r = await apiRequest({ url: url, method: method, headers: lltHeaders(u, cap), body: body });
-    if (r && String(r.code) === "862101") {
-      log("🛡️ " + label + "：需要滑块验证（862101），尝试求解…");
-      const newCap = await needCaptcha();
-      if (newCap && newCap !== cap) {
-        r = await apiRequest({ url: url, method: method, headers: lltHeaders(u, newCap), body: body });
-      } else if (newCap) {
-        r = await apiRequest({ url: url, method: method, headers: lltHeaders(u, newCap), body: body });
-      }
-    }
-    return r;
-  };
+  const session = $.captchaSession || createCaptchaSession(u, captchaToken, refreshCaptcha);
+  const callWithCaptcha = (url, method, body) => requestWithCaptcha(
+    { url: url, method: method, body: body }, (token) => lltHeaders(u, token), session);
 
   for (let ci = 0; ci < candidates.length; ci++) {
     const act = candidates[ci];
     const tag = label + (candidates.length > 1 ? "(#" + (ci + 1) + ")" : "");
 
     // ---- 1. 活动状态 ----
-    const info = await apiRequest({
-      url: HOST_LLT + "/api/v1/activity/common/component/info?component_no=" + encodeURIComponent(componentNo) + "&activity_no=" + encodeURIComponent(act),
-      method: "GET", headers: lltHeaders(u, cap),
-    });
+    const info = await callWithCaptcha( HOST_LLT + "/api/v1/activity/common/component/info?component_no=" + encodeURIComponent(componentNo) + "&activity_no=" + encodeURIComponent(act), "GET");
     if (info && String(info.code) === "0000") {
       const d = info.data || {};
       const status = Number(d.lottery_status);
@@ -1562,11 +1562,12 @@ async function doLottery(u, componentNo, activityNo, label, captchaToken) {
       continue;
     }
 
+    if (!info || String(info.code) !== "0000") return { risk: isRisk(info), done: false, message: "活动状态查询失败" };
     // ---- 2. 抽奖前检查 ----
     const chk = await callWithCaptcha(HOST_LLT + "/api/v1/activity/auth/chance/check", "POST",
       { component_no: componentNo, activity_no: act });
     if (isRisk(chk)) { risk = true; log("🛡️ " + tag + "：chance/check 触发风控"); return { risk: true, activity: act }; }
-    if (chk && String(chk.code) === "0000") debug("chance/check -> " + JSON.stringify(chk.data));
+    if (!chk || String(chk.code) !== "0000") return { done: false, message: "抽奖资格检查失败" };
 
     // ---- 3. 抽奖签到（拿机会）----
     const sign = await callWithCaptcha(HOST_LLT + "/api/v1/activity/auth/lottery/sign", "POST",
@@ -1585,32 +1586,29 @@ async function doLottery(u, componentNo, activityNo, label, captchaToken) {
     } else if (signCode === "801006" || /数据为空/.test(signMsg)) {
       lastMsg = signMsg; log("⏭️ " + tag + "签到：" + signMsg + "（尝试下一个）"); continue;
     } else {
-      lastMsg = signMsg || signCode;
-      log($.doFlag[false] + " " + tag + "签到：" + lastMsg + "（code=" + signCode + "）");
+      return { done: false, message: "抽奖签到失败" + (signCode ? "（" + signCode + "）" : "，响应未知") };
     }
 
     // ---- 4. 查询抽奖机会 ----
-    const ch = await apiRequest({
-      url: HOST_LLT + "/api/v1/activity/auth/lottery/chance?component_no=" + encodeURIComponent(componentNo) + "&activity_no=" + encodeURIComponent(act),
-      method: "GET", headers: lltHeaders(u, cap),
-    });
+    const ch = await callWithCaptcha( HOST_LLT + "/api/v1/activity/auth/lottery/chance?component_no=" + encodeURIComponent(componentNo) + "&activity_no=" + encodeURIComponent(act), "GET");
     if (isRisk(ch)) { log("🛡️ " + tag + "：查询机会触发风控"); return { risk: true, activity: act }; }
     if (!ch || String(ch.code) !== "0000") {
       log("⛔️ " + tag + "：抽奖机会查询失败（" + msgOf(ch) + "）");
-      return { risk: risk, activity: act, done: false };
+      return { risk: risk, activity: act, done: false, message: "抽奖机会查询失败或数据异常" };
     }
     let chance = Number((ch.data || {}).chance);
     if (!Number.isFinite(chance) || chance < 0 || !Number.isInteger(chance)) {
-      log("⛔️ " + tag + "：抽奖机会数据异常"); return { risk: risk, activity: act, done: false };
+      log("⛔️ " + tag + "：抽奖机会数据异常"); return { risk: risk, activity: act, done: false, message: "抽奖机会查询失败或数据异常" };
     }
     if (chance <= 0) {
       log("ℹ️ " + tag + "：当前无可用抽奖机会（今日已用完或未满足条件）");
-      return { risk: risk, activity: act, done: true, chance: 0 };
+      return { risk: risk, activity: act, done: true, chance: 0, message: "无可用抽奖机会" };
     }
     log("🎟️ " + tag + "：可用抽奖机会 " + chance + " 次");
 
     // ---- 5. 抽奖 ----
     const results = [];
+    let stopped = "";
     const times = Math.min(chance, 3);
     for (let i = 0; i < times; i++) {
       const d = await callWithCaptcha(HOST_LLT + "/api/v1/activity/auth/lottery/click", "POST",
@@ -1623,40 +1621,45 @@ async function doLottery(u, componentNo, activityNo, label, captchaToken) {
         log($.doFlag[true] + " " + tag + "抽奖：" + (i + 1) + "/" + times + " → " + prize);
         results.push(prize);
       } else if (d && (String(d.code) === "863033" || /上限/.test(msgOf(d)))) {
-        log("ℹ️ " + tag + "抽奖：" + (msgOf(d) || "已达今日抽奖上限"));
+        stopped = "已达抽奖上限";
+        log("ℹ️ " + tag + "抽奖：" + stopped);
         break;
       } else {
+        stopped = "抽奖失败或响应未知，未重试";
         log($.doFlag[false] + " " + tag + "抽奖：" + msgOf(d) + "（code=" + (d && d.code) + "）");
         break;
       }
       await sleep(600);
     }
-    return { risk: risk, activity: act, done: true, chance: chance, result: results.join("、") };
+    return { risk: risk, activity: act, done: !risk && !stopped, chance: chance,
+      result: results.join("、"), message: (results.length ? "已抽 " + results.length + " 次：" + results.join("、") : "") +
+        (stopped ? (results.length ? "；" : "") + stopped : !risk && chance > times ? "；其余机会留待下次" : "") };
   }
 
   log("⛔️ " + label + "：所有候选活动均不可用（" + (lastMsg || "未知原因") + "）");
-  return { risk: risk, activity: candidates[0], done: false };
+  return { risk: risk, activity: candidates[0], done: false, message: "候选活动均不可用" };
 }
 
 async function doOldLottery(u) {
   const sign = await apiRequest({
-    url: HOST_TASK + "/openapi/task/v1/lottery/sign",
-    method: "POST", headers: taskHeaders(u, { "x-lf-usertoken": u.token }), body: { task_id: "", activity_no: ACTIVITY_LOTTERY_OLD },
+    url: HOST_TASK + "/openapi/task/v1/lottery/sign", method: "POST",
+    headers: taskHeaders(u, { "x-lf-usertoken": u.token }), body: { task_id: "", activity_no: ACTIVITY_LOTTERY_OLD }
   });
-  if (sign && String(sign.code) === "0000") {
-    const times = Number((sign.data || {}).ticket_times || 0);
-    log("ℹ️ 旧版抽奖签到：获得 " + times + " 次机会");
-    for (let i = 0; i < Math.min(times, 3); i++) {
-      const r = await apiRequest({
-        url: HOST_TASK + "/openapi/task/v1/lottery/luck",
-        method: "POST", headers: taskHeaders(u, { "x-lf-usertoken": u.token }),
-        body: { task_id: "", time: dateTime(), activity_no: ACTIVITY_LOTTERY_OLD, use_luck: 0 },
-      });
-      if (r && String(r.code) === "0000") log($.doFlag[true] + " 旧版抽奖：获得 " + ((r.data || {}).desc || ""));
-      else break;
-      await sleep(600);
-    }
-  } else if (sign) log("ℹ️ 旧版抽奖：" + msgOf(sign));
+  if (!sign || String(sign.code) !== "0000") return { risk: isRisk(sign), done: false, message: "签到失败或响应未知" };
+  const times = Number((sign.data || {}).ticket_times);
+  if (!Number.isInteger(times) || times < 0) return { done: false, message: "机会数据异常" };
+  if (!times) return { done: true, message: "无可用抽奖机会" };
+  const prizes = [];
+  for (let i = 0; i < Math.min(times, 3); i++) {
+    const r = await apiRequest({ url: HOST_TASK + "/openapi/task/v1/lottery/luck", method: "POST",
+      headers: taskHeaders(u, { "x-lf-usertoken": u.token }),
+      body: { task_id: "", time: dateTime(), activity_no: ACTIVITY_LOTTERY_OLD, use_luck: 0 } });
+    if (!r || String(r.code) !== "0000") return { done: false, risk: isRisk(r), result: prizes.join("、"),
+      message: "已抽 " + prizes.length + " 次；后续失败或响应未知" };
+    prizes.push(String((r.data || {}).desc || "抽奖完成，奖品信息未返回"));
+    if (i + 1 < Math.min(times, 3)) await sleep(600);
+  }
+  return { done: true, message: "已抽 " + prizes.length + " 次：" + prizes.join("、") };
 }
 
 /* ==========================================================================
@@ -1678,49 +1681,28 @@ async function main() {
 
   for (let idx = 0; idx < users.length; idx++) {
     const u = users[idx];
-    log("🚀 开始任务：" + u.userName);
+    $.accountIndex = (idx + 1) + "/" + users.length;
+    $.results = {}; $.accountInfo = null; $.accountError = ""; $.captchaSession = null;
     $.notifyMsg = [];
     $.ckStatus = true; $.ckExpired = false; $.title = ""; $.signRewards = Object.create(null);
 
     try {
-      let solverAttempted = false;
-      const refreshCaptcha = async () => {
-        if (solverAttempted || $.ckExpired) return "";
-        solverAttempted = true;
-        return solveSlider(log);
-      };
       // captcha token：缓存 / 环境变量注入
       let cap = loadCaptchaToken(u) || $.getdata("lhtj_captcha_token_" + userKey(u)) || $.getdata("lhtj_captcha_token_all") || "";
+      $.captchaSession = createCaptchaSession(u, cap);
       if (cap) log("🔑 使用已缓存的 captcha token");
 
       // 签到
-      let r1 = await doSignin(u, "每日签到", cap, ACTIVITY_SIGN_WX);
-      let r2 = await doSignin(u, "APP每日签到", cap, ACTIVITY_SIGN_APP);
+      let r1 = await doSignin(u, "微信签到", cap, ACTIVITY_SIGN_WX);
+      $.results.wx = r1;
+      let r2 = await doSignin(u, "APP签到", cap, ACTIVITY_SIGN_APP);
 
-      // 触发风控时才去走滑块（节省请求）
-      if (r1.risk || r2.risk) {
-        log("🛡️ 触发风控，尝试求解滑块…");
-        cap = await refreshCaptcha();
-        if (cap) {
-          saveCaptchaToken(u, cap);
-          if (r1.risk) r1 = await doSignin(u, "每日签到(验证后)", cap, ACTIVITY_SIGN_WX);
-          if (r2.risk) r2 = await doSignin(u, "APP每日签到(验证后)", cap, ACTIVITY_SIGN_APP);
-        } else {
-          log("⛔️ 滑块未通过，跳过需要验证的步骤");
-        }
-      }
-
+      $.results.wx = r1; $.results.app = r2;
       if ($.ckStatus) {
         // APP 福利抽奖（微信抽奖活动已结束，相关代码已移除）
         const lot = await doLottery(u, component_app, activity_app, "APP抽奖", cap);
-        if (lot.risk) {
-          const cap2 = await refreshCaptcha();
-          if (cap2) {
-            saveCaptchaToken(u, cap2);
-            await doLottery(u, component_app, activity_app, "APP抽奖(验证后)", cap2);
-          }
-        }
-        if ($.getdata("lhtj_enable_old_lottery") === "true") await doOldLottery(u);
+        $.results.lottery = lot;
+        if ($.getdata("lhtj_enable_old_lottery") === "true") $.results.legacy = await doOldLottery(u);
 
         // 用户信息 / 珑珠
         const ui = await apiRequest({ url: HOST_MEMBER + "/api/member/v1/mine-info", method: "POST", headers: memberHeaders(u), body: { channel: u["x-lf-channel"], bu_code: u["x-lf-bu-code"], token: u.token } });
@@ -1731,7 +1713,7 @@ async function main() {
         const balance = bi && String(bi.code) === "0000" && bi.data && bi.data.balance != null ? bi.data.balance : "查询失败";
         const rewardText = Object.keys($.signRewards).map((unit) => $.signRewards[unit] + " " + unit).join(" + ");
         $.title = rewardText ? "本次签到获得 " + rewardText : "本次未确认新增签到奖励";
-        $.notifyMsg.push("当前用户：" + nick + "\n成长值：" + growth + "　等级：V" + level + "　珑珠：" + balance);
+        $.accountInfo = { nick: nick, growth: growth, level: level, balance: balance };
       } else {
         $.notifyMsg.push("⛔️ " + u.userName + "：登录已过期，请重新抓包");
 
@@ -1739,17 +1721,38 @@ async function main() {
 
     } catch (e) {
       log("⛔️ 当前账号执行异常，继续处理其他账号");
-      $.notifyMsg.push("⛔️ 当前账号执行异常，请查看日志");
+      $.accountError = "执行异常，部分任务未完成";
     }
-    if ($.ckExpired) $.notifyMsg.push("⛔️ " + removeExpiredUser(u));
-    notifyUser($.notifyMsg.join("\n"));
+    if ($.ckExpired) $.accountError = "登录已过期；" + removeExpiredUser(u);
+    $.captchaSession = null;
+    notifyUser(formatAccountResult(u));
     if (idx < users.length - 1) await sleep(1500);
   }
 }
 
+function formatAccountResult(u) {
+  const info = $.accountInfo;
+  const lines = ["龙湖天街 · 账号 " + $.accountIndex + " · " + safeLogText(info ? info.nick : u.userName)];
+  const names = { wx: "微信签到", app: "APP签到", lottery: "APP抽奖" };
+  if ($.results.legacy) names.legacy = "旧版抽奖";
+  Object.keys(names).forEach((key) => {
+    const r = $.results[key];
+    let message = "未执行";
+    if (r) message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续需要验证" : "需要验证，已停止") :
+      (r.message || (r.done === false ? "未完成" : r.done ? "已完成" : "结果未知"));
+    lines.push(names[key] + "：" + safeLogText(message));
+  });
+  const rewards = Object.keys($.signRewards).map((unit) => $.signRewards[unit] + " " + unit).join(" + ");
+  lines.push("新增签到奖励：" + (rewards || "无已确认新增奖励"));
+  if (info) lines.push("账户：成长值 " + info.growth + "｜等级 " + (info.level === "未知" ? "未知" : "V" + info.level) + "｜珑珠 " + info.balance);
+  if ($.accountError) lines.push("提示：" + $.accountError);
+  $.title = "账号 " + $.accountIndex + ($.accountError ? " · 请检查" : " · 执行结果");
+  return lines.join("\n");
+}
+
 function notifyUser(content) {
   if (!content) return;
-  log(($.title || "任务完成") + "\n" + content);
+  $.log(content);
   $.msg($.name, $.title || "", content, { "media-url": $.avatar });
 }
 
@@ -1845,14 +1848,20 @@ function Env(name) {
   this.http = typeof $httpClient !== "undefined" ? $httpClient : (typeof $http !== "undefined" ? $http : null);
 }
 
-function log(m) { $.log(m); }
+function safeLogText(value) {
+  return String(value == null ? "" : value).replace(/[\r\n\t]+/g, " ")
+    .replace(/\b(1\d{2})\d{4}(\d{4})\b/g, "$1****$2")
+    .replace(/((?:token|authorization|cookie)\s*[:=]\s*)[^\s,;]+/gi, "$1[隐藏]")
+    .slice(0, 240);
+}
+function log(m) { if ($.getdata("lhtj_debug") === "true") $.log("[调试] " + safeLogText(m)); }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function dateTime() {
   const d = new Date(), p = (n) => (n < 10 ? "0" + n : "" + n);
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
 }
 // 调试开关：Loon 里把下面改成 true 可看详细日志
-function debug(m) { if (false) console.log("[debug] " + m); }
+function debug(m) { log(m); }
 
 /* ==========================================================================
  * 入口
