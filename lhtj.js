@@ -1,934 +1,1676 @@
 /*
-------------------------------------------
-@Author: doosit
-@Date: 2026/03/29 19:42:08
-@Description: 龙湖天街小程序/APP签到、抽奖
-------------------------------------------
-获取 Cookie：打开龙湖天街小程序，进入 我的 - 签到赚珑珠 - 任务赚奖励 - 马上签到。
-Loon 插件：请直接导入仓库中的 lhtj.plugin
+ * ============================================================================
+ * 龙湖天街 签到 / 抽奖 / 滑块验证  —— Loon 专用单文件版
+ * ============================================================================
+ * 适用：Loon（iPhone / iPad），纯 JS、零依赖、单文件（复制即用）。
+ * ============================================================================
+ */
 
-图标：https://raw.githubusercontent.com/doosit/lhtj/main/logo/logo.png
+const $ = new Env("龙湖天街");
+const ckName = "lhtj_data";
+const tokenKey = "lhtj_captcha_token";
 
-⚠️【免责声明】
-------------------------------------------
-1、此脚本仅用于学习研究，不保证其合法性、准确性、有效性，请根据情况自行判断，本人对此不承担任何保证责任。
-2、由于此脚本仅用于学习研究，您必须在下载后 24 小时内将所有内容从您的计算机或手机或任何存储设备中完全删除，若违反规定引起任何事件本人对此均不负责。
-3、请勿将此脚本用于任何商业或非法目的，若违反规定请自行对此负责。
-4、此脚本涉及应用与本人无关，本人对因此引起的任何隐私泄漏或其他后果不承担任何责任。
-5、本人对任何脚本引发的问题概不负责，包括但不限于由脚本错误引起的任何损失和损害。
-6、如果任何单位或个人认为此脚本可能涉嫌侵犯其权利，应及时通知并提供身份证明，所有权证明，我们将在收到认证文件确认后删除此脚本。
-7、所有直接或间接使用、查看此脚本的人均应该仔细阅读此声明。本人保留随时更改或补充此声明的权利。一旦您使用或复制了此脚本，即视为您已接受此免责声明。
-8、脚本根据https://raw.githubusercontent.com/leiyiyan项目优化而来
-*/
+/* ========================== 常量 ========================== */
 const component_app = "CF17F20C54L0SYEZ";
 const activity_app = "AP26E022L8FTDAWH";
 const component = "CW16530P28V520GL";
 const activity = "AP26P012R90F1UKX";
-const activity_sign = "11111111111686241863606037740000";
-const activity_sign_app = "11111111111736501868255956070000";
-const $ = new Env("龙湖天街");
-const ckName = "lhtj_data";
-let userCookie = loadUserCookies();
-//notify
-const notify = $.isNode() ? require('./sendNotify') : '';
+const ACTIVITY_SIGN_WX = "11111111111686241863606037740000";
+const ACTIVITY_SIGN_APP = "11111111111736501868255956070000";
+const ACTIVITY_LOTTERY_OLD = "11111111111735633282374092760000";
+
+const HOST_TASK = "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod";
+const HOST_LLT = "https://gw2c-hw-open.longfor.com/llt-gateway-prod";
+const HOST_MEMBER = "https://longzhu-api.longfor.com/lmember-member-open-api-prod";
+const GAIA_TASK = "c06753f1-3e68-437d-b592-b94656ea5517";
+const GAIA_MEMBER = "d1eb973c-64ec-4dbe-b23b-22c8117c4e8e";
+const GAIA_LLT = "2f9e3889-91d9-4684-8ff5-24d881438eaf";
+
+const UA_MINI = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da";
+const UA_APP = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 &MAIAWebKit_iOS_com.longfor.supera_1.29.0_202609071056_Default_3.3.1.0";
+
+// 滑块（顶象）
+const SLIDER_HOST = "https://ly-ver.longhu.net";
+const C1_HOST = "https://ly-sta.longhu.net";
+// 小程序端用的是 /udid/w1（返回纯 JSON，免参数），H5/App 端用 /udid/c1（JSONP）。
+// 两个通道返回的凭证都能用于 /api/a；w1 与小程序 UA 更匹配。
+const CONSTID_PATH_DEFAULT = "w1";
+const SLIDER_AK = "d1a43734fc59aeae9f1562dbd70fdf54";
+const SLIDER_JSV = "1.3.41.372";
+const JPEG_SCALE = 1;                 // 原尺寸还原列置换，与 PNG 拼图保持同一坐标系
+const CAPTCHA_TTL = 180000;           // 缓存的 captcha token 有效期 ms
+
+const RISK_CODES = ["4011", "4012", "4007", "8040012", "8040011", "4010"];
+const RISK_PATTERN = /(风控|验证码|需要验证|验证失败|risk|captcha|拦截)/i;
+const EXPIRED_PATTERN = /登录已过期|用户未登录|登录失效|token(?:已)?失效|请重新登录|请登录|未授权/i;
+const REQUIRED_FIELDS = ["cookie", "token", "x-lf-dxrisk-token", "x-lf-channel", "x-lf-usertoken", "x-lf-bu-code", "x-lf-dxrisk-source"];
+
+const notify = "";
+const isHttpRequest = typeof $request !== "undefined" && $request &&
+  typeof $request.url === "string" && /^https?:\/\//i.test($request.url);
 $.notifyMsg = [];
-//debug
-$.is_debug = ($.isNode() ? process.env.IS_DEDUG : $.getdata('is_debug')) || 'false';
-$.doFlag = { "true": "✅", "false": "⛔️" };
+$.title = "";
+$.avatar = "";
 $.ckStatus = true;
 $.ckExpired = false;
-$.lastError = null;
-//------------------------------------------
-const baseUrl = "";
-const _headers = {};
-const EXPIRED_PATTERNS = /登录已过期|用户未登录|登录失效|token(?:已)?失效|请重新登录|请登录/i;
-const REQUIRED_CAPTURE_FIELDS = [
-    "cookie",
-    "token",
-    "x-lf-dxrisk-token",
-    "x-lf-channel",
-    "x-lf-usertoken",
-    "x-lf-bu-code",
-    "x-lf-dxrisk-source"
-];
+$.doFlag = { true: "✅", false: "⛔️" };
 
-//------------------------------------------
-const fetch = async (o) => {
-    try {
-        if (typeof o === 'string') o = { url: o };
-        if (o?.url?.startsWith("/") || o?.url?.startsWith(":")) o.url = baseUrl + o.url;
-        const res = await Request({ ...o, headers: o.headers || _headers, url: o.url });
-        debug(res, o?.url?.replace(/\/+$/, '').substring(o?.url?.lastIndexOf('/') + 1));
-        const responseMessage = getResponseMessage(res);
-        if (responseMessage && EXPIRED_PATTERNS.test(responseMessage)) {
-            const error = new Error(responseMessage);
-            error.isCookieExpired = true;
-            throw error;
-        }
-        return res;
-    } catch (e) {
-        $.ckStatus = false;
-        $.ckExpired = Boolean(e?.isCookieExpired);
-        $.lastError = e;
-        $.log(`⛔️ 请求发起失败！${e?.message || e}`);
-        return null;
+/* ==========================================================================
+ * 一、零依赖工具：inflate / JPEG 亮度解码 / 图片解码
+ * ========================================================================== */
+
+/** zlib/deflate 解压（按 puff.c 规范实现，用于解 PNG IDAT） */
+function inflate(input) {
+  const src = input;
+  let inPos = 0, bitBuf = 0, bitCnt = 0;
+  let out = new Uint8Array(1 << 16);
+  let outLen = 0;
+  const ensure = (n) => {
+    if (outLen + n <= out.length) return;
+    let cap = out.length;
+    while (cap < outLen + n) cap *= 2;
+    const nb = new Uint8Array(cap);
+    nb.set(out.subarray(0, outLen));
+    out = nb;
+  };
+  const bits = (need) => {
+    let val = bitBuf;
+    while (bitCnt < need) {
+      if (inPos >= src.length) throw new Error("inflate: unexpected end");
+      val |= src[inPos++] << bitCnt;
+      bitCnt += 8;
     }
-};
-async function main() {
-    try {
-        const cleanedUsers = dedupeUsers(userCookie);
-        if ($.toStr(cleanedUsers) !== $.toStr(userCookie)) {
-            userCookie = cleanedUsers;
-            saveUserCookies();
-        }
-        const runnableUsers = userCookie.filter(isUsableUser);
-        //check accounts
-        if (!runnableUsers?.length) {
-            if (userCookie.length) throw new Error("已捕获到未完整的Cookie信息，请重新打开签到页触发相关请求以补全Cookie");
-            throw new Error("找不到可用的帐户");
-        }
-        $.log(`⚙️ 发现 ${runnableUsers?.length ?? 0} 个可用帐户\n`);
-        //doTask of userList
-        const users = [...runnableUsers];
-        for (const [index, user] of users.entries()) {
-            //init of user
-            $.log(`🚀 开始任务：${user.userName || `账号${index + 1}`}`);
-            $.notifyMsg = [];
-            $.ckStatus = true;
-            $.ckExpired = false;
-            $.lastError = null;
-            $.title = "";
-            $.avatar = "";
-
-            // 签到
-            const reward_num = Number(await signin(user) || 0);
-            // APP签到
-            const reward_num2 = Number(await signin2(user) || 0);
-            if ($.ckStatus) {
-                // 抽奖签到
-                await lotterySignin(user);
-                // 抽奖
-                await lotteryClock(user);
-                //APP
-                await lotterySignin3(user);
-                //APP
-                await lotteryClock3(user);
-                // 老抽奖签到
-                //await lotterySignin2(user)
-                // 老抽奖
-                //await lotteryClock2(user)
-                //查询用户信息
-                const userInfo = await getUserInfo(user) || {};
-                //查询珑珠
-                const balanceInfo = await getBalance(user) || {};
-                const { nick_name = user.userName, growth_value = 0, level = 0, head_portrait = "" } = userInfo;
-                const { balance = 0 } = balanceInfo;
-                $.avatar = head_portrait;
-                $.title = `本次运行共获得${reward_num + reward_num2}积分`;
-                DoubleLog(`当前用户:${nick_name}\n成长值: ${growth_value}  等级: V${level}  珑珠: ${balance}`);
-                updateUserRecord(user, buildUserProfilePatch(user, userInfo));
-            } else {
-                const accountName = user.userName || `账号${index + 1}`;
-                if ($.ckExpired) {
-                    removeUserRecord(user, $.lastError?.message || "登录已过期");
-                    DoubleLog(`⛔️ 「${accountName}」Cookie已失效，已自动清理`);
-                } else {
-                    DoubleLog(`⛔️ 「${accountName}」请求失败，本次跳过`);
-                }
-            }
-            //notify
-            await sendMsg($.notifyMsg.join("\n"));
-        }
-    } catch (e) {
-        throw e;
+    bitBuf = val >>> need;
+    bitCnt -= need;
+    return val & ((1 << need) - 1);
+  };
+  const buildHuff = (lengths) => {
+    const counts = new Int32Array(16);
+    for (let i = 0; i < lengths.length; i++) counts[lengths[i]]++;
+    counts[0] = 0;
+    const offs = new Int32Array(16);
+    for (let i = 1; i < 16; i++) offs[i] = offs[i - 1] + counts[i - 1];
+    const symbols = new Int32Array(lengths.length);
+    for (let i = 0; i < lengths.length; i++) if (lengths[i]) symbols[offs[lengths[i]]++] = i;
+    return { counts, symbols };
+  };
+  const decode = (h) => {
+    let code = 0, first = 0, index = 0;
+    for (let len = 1; len <= 15; len++) {
+      code |= bits(1);
+      const count = h.counts[len];
+      if (code - first < count) return h.symbols[index + (code - first)];
+      index += count;
+      first = (first + count) << 1;
+      code <<= 1;
     }
-}
-
-//签到
-async function signin(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'token': user.token,
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': 'c06753f1-3e68-437d-b592-b94656ea5517',
-                'x-lf-bu-code': user['x-lf-bu-code'],
-                'x-lf-channel': user['x-lf-channel'],
-                'origin': 'https://longzhu.longfor.com',
-                'referer': 'https://longzhu.longfor.com/',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-usertoken': user['x-lf-usertoken']
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                'activity_no': activity_sign
-            }
-        }
-        let res = await fetch(opts);
-        const reward_num = res?.data?.is_popup == 1 ? res?.data?.reward_info[0]?.reward_num : 0
-        $.log(`${$.doFlag[res?.data?.is_popup == 1]} ${res?.data?.is_popup == 1 ? '每日签到: 成功, 获得' + res?.data?.reward_info[0]?.reward_num + '分' : '每日签到: 今日已签到'}\n`);
-        return reward_num
-    } catch (e) {
-        $.log(`⛔️ 每日签到失败！${e}\n`)
+    throw new Error("inflate: bad huffman code");
+  };
+  const LEN_BASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];
+  const LEN_EXTRA = [0,0,0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,0];
+  const DIST_BASE = [1,2,3,4,5,7,9,13,17,25,33,49,65,97,129,193,257,385,513,769,1025,1537,2049,3073,4097,6145,8193,12289,16385,24577];
+  const DIST_EXTRA = [0,0,0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10,10,11,11,12,12,13,13];
+  let fixedLit = null, fixedDist = null;
+  const getFixed = () => {
+    if (!fixedLit) {
+      const ll = new Uint8Array(288);
+      for (let i = 0; i < 144; i++) ll[i] = 8;
+      for (let i = 144; i < 256; i++) ll[i] = 9;
+      for (let i = 256; i < 280; i++) ll[i] = 7;
+      for (let i = 280; i < 288; i++) ll[i] = 8;
+      fixedLit = buildHuff(ll);
+      fixedDist = buildHuff(new Uint8Array(30).fill(5));
     }
-}
-
-//APP签到
-async function signin2(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'token': user.token,
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': 'c06753f1-3e68-437d-b592-b94656ea5517',
-                'x-lf-bu-code': user['x-lf-bu-code'],
-                'x-lf-channel': user['x-lf-channel'],
-                'origin': 'https://longzhu.longfor.com',
-                'referer': 'https://longzhu.longfor.com/',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-usertoken': user['x-lf-usertoken']
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                'activity_no': activity_sign_app
-            }
-        }
-        let res = await fetch(opts);
-        const reward_num2 = res?.data?.is_popup == 1 ? res?.data?.reward_info[0]?.reward_num : 0
-        $.log(`${$.doFlag[res?.data?.is_popup == 1]} ${res?.data?.is_popup == 1 ? 'APP每日签到: 成功, 获得' + res?.data?.reward_info[0]?.reward_num + '分' : 'APP每日签到: 今日已签到'}\n`);
-        return reward_num2
-    } catch (e) {
-        $.log(`⛔️ APP每日签到失败！${e}\n`)
+    return [fixedLit, fixedDist];
+  };
+  const codes = (lit, dist) => {
+    for (;;) {
+      const sym = decode(lit);
+      if (sym < 256) { ensure(1); out[outLen++] = sym; continue; }
+      if (sym === 256) return;
+      const li = sym - 257;
+      const length = LEN_BASE[li] + bits(LEN_EXTRA[li]);
+      const dsym = decode(dist);
+      const d = DIST_BASE[dsym] + bits(DIST_EXTRA[dsym]);
+      ensure(length);
+      let from = outLen - d;
+      for (let i = 0; i < length; i++) out[outLen++] = out[from + i];
     }
-}
-
-
-// 抽奖签到
-async function lotterySignin(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/sign",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': '2f9e3889-91d9-4684-8ff5-24d881438eaf',
-                'bucode': user['x-lf-bu-code'],
-                'channel': user['x-lf-channel'],
-                'authtoken': user['x-lf-usertoken'],
-                'origin': 'https://llt.longfor.com',
-                'referer': 'https://llt.longfor.com/'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "component_no": component,
-                "activity_no": activity
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? '抽奖签到: 成功, 获得' + res?.data?.chance + '次抽奖机会' : '抽奖签到: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ 抽奖签到失败！${e}\n`)
-    }
-}
-// 抽奖
-async function lotteryClock(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/click",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': '2f9e3889-91d9-4684-8ff5-24d881438eaf',
-                'bucode': user['x-lf-bu-code'],
-                'channel': user['x-lf-channel'],
-                'authtoken': user['x-lf-usertoken'],
-                'origin': 'https://llt.longfor.com',
-                'referer': 'https://llt.longfor.com/'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "component_no": component,
-                "activity_no": activity,
-                "batch_no": 0
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? '抽奖成功, 获得' + res?.data?.reward_num : '抽奖: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ 抽奖失败！${e}\n`)
-    }
-}
-
-
-// app抽奖签到
-async function lotterySignin3(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/sign",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': '2f9e3889-91d9-4684-8ff5-24d881438eaf',
-                'bucode': user['x-lf-bu-code'],
-                'channel': user['x-lf-channel'],
-                'authtoken': user['x-lf-usertoken'],
-                'origin': 'https://llt.longfor.com',
-                'referer': 'https://llt.longfor.com/'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "component_no": component_app,
-                "activity_no": activity_app
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? 'APP抽奖签到: 成功, 获得' + res?.data?.chance + '次抽奖机会' : 'APP抽奖签到: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ APP抽奖签到失败！${e}\n`)
-    }
-}
-// APP抽奖
-async function lotteryClock3(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/llt-gateway-prod/api/v1/activity/auth/lottery/click",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source'],
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': '2f9e3889-91d9-4684-8ff5-24d881438eaf',
-                'bucode': user['x-lf-bu-code'],
-                'channel': user['x-lf-channel'],
-                'authtoken': user['x-lf-usertoken'],
-                'origin': 'https://llt.longfor.com',
-                'referer': 'https://llt.longfor.com/'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "component_no": component_app,
-                "activity_no": activity_app,
-                "batch_no": 0
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? 'APP抽奖成功, 获得' + res?.data?.reward_num : 'APP抽奖: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ APP抽奖失败！${e}\n`)
-    }
-}
-
-
-// 老抽奖签到
-async function lotterySignin2(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/lottery/sign",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-usertoken': user.token,
-                'x-gaia-api-key': 'c06753f1-3e68-437d-b592-b94656ea5517',
-                'x-lf-bu-code': user['x-lf-bu-code'],
-                'x-lf-channel': user['x-lf-channel'],
-                'origin': 'https://longzhu.longfor.com',
-                'referer': 'https://longzhu.longfor.com/'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "task_id": "",
-                "activity_no": "11111111111735633282374092760000"
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? '老抽奖签到: 成功, 获得' + res?.data?.ticket_times + '次抽奖机会' : '老抽奖签到: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ 老抽奖签到失败！${e}\n`)
-    }
-}
-// 老抽奖
-async function lotteryClock2(user) {
-    try {
-        const opts = {
-            url: "https://gw2c-hw-open.longfor.com/lmarketing-task-api-mvc-prod/openapi/task/v1/lottery/luck",
-            headers: {
-                'cookie': user.cookie,
-                'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'x-lf-usertoken': user.token,
-                'x-lf-dxrisk-token': user['x-lf-dxrisk-token'],
-                'x-gaia-api-key': 'c06753f1-3e68-437d-b592-b94656ea5517',
-                'x-lf-bu-code': user['x-lf-bu-code'],
-                'x-lf-channel': user['x-lf-channel'],
-                'origin': 'https://longzhu.longfor.com',
-                'referer': 'https://longzhu.longfor.com/',
-                'x-lf-dxrisk-source': user['x-lf-dxrisk-source']
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "task_id": "",
-                "time": getDateTime(),
-                "activity_no": "11111111111735633282374092760000",
-                "use_luck": 0
-            }
-        }
-        let res = await fetch(opts);
-        $.log(`${$.doFlag[res?.code == '0000']} ${res?.code == '0000' ? '老抽奖成功, 获得' + res?.data?.desc : '老抽奖: ' + res?.message}\n`);
-    } catch (e) {
-        $.log(`⛔️ 老抽奖失败！${e}\n`)
-    }
-}
-
-
-
-//查询用户信息
-async function getUserInfo(user) {
-    try {
-        const opts = {
-            url: "https://longzhu-api.longfor.com/lmember-member-open-api-prod/api/member/v1/mine-info",
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'Referer': 'https://servicewechat.com/wx50282644351869da/424/page-frame.html',
-                'token': user.token,
-                'X-Gaia-Api-Key': 'd1eb973c-64ec-4dbe-b23b-22c8117c4e8e'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "channel": user['x-lf-channel'],
-                "bu_code": user['x-lf-bu-code'],
-                "token": user.token
-            }
-        }
-        let res = await fetch(opts);
-        let growth_value = res?.data?.growth_value || 0;
-        $.log(`🎉 ${res?.code == '0000' ? '您当前成长值: ' + growth_value : res?.message}\n`);
-        return res?.data
-    } catch (e) {
-        $.log(`⛔️ 查询用户信息失败！${e}\n`)
-    }
-}
-//查询珑珠
-async function getBalance(user) {
-    try {
-        const opts = {
-            url: "https://longzhu-api.longfor.com/lmember-member-open-api-prod/api/member/v1/balance",
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_8 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48(0x18003029) NetType/4G Language/zh_CN miniProgram/wx50282644351869da',
-                'Referer': 'https://servicewechat.com/wx50282644351869da/424/page-frame.html',
-                'token': user.token,
-                'X-Gaia-Api-Key': 'd1eb973c-64ec-4dbe-b23b-22c8117c4e8e'
-            },
-            type: 'post',
-            dataType: "json",
-            body: {
-                "channel": user['x-lf-channel'],
-                "bu_code": user['x-lf-bu-code'],
-                "token": user.token
-            }
-        }
-        let res = await fetch(opts);
-        let balance = res?.data.balance || 0;
-        let expiring_lz = res?.data.expiring_lz || 0;
-        $.log(`🎉 ${res?.code == '0000' ? '您当前珑珠: ' + balance + ', 即将过期: ' + expiring_lz : res?.message}\n`);
-        return res?.data
-    } catch (e) {
-        $.log(`⛔️ 查询用户珑珠失败！${e}\n`)
-    }
-}
-//获取Cookie
-async function getCookie() {
-    try {
-        if ($request && $request.method === 'OPTIONS') return;
-
-        const header = ObjectKeys2LowerCase($request.headers || {});
-        if (!header.cookie) return;
-
-        const capturedAt = nowIso();
-        const newData = {
-            "userName": guessUserName(header, header.cookie),
-            'x-lf-dxrisk-token': header['x-lf-dxrisk-token'],
-            "x-lf-channel": header['x-lf-channel'],
-            "token": header.token,
-            'x-lf-usertoken': header['x-lf-usertoken'],
-            "cookie": header.cookie,
-            "x-lf-bu-code": header['x-lf-bu-code'],
-            'x-lf-dxrisk-source': header['x-lf-dxrisk-source'],
-            "accountKey": getAccountKeyFromRecord(header, header.cookie),
-            "cookieId": getStableCookieId(header.cookie),
-            "cookieFingerprint": buildCookieFingerprint(header.cookie),
-            "updatedAt": capturedAt,
-            "lastCaptureAt": capturedAt
-        };
-        const result = upsertUserCookie(newData);
-        const subtitle = result.ready
-            ? `🎉 ${result.action}Cookie成功!`
-            : `⚠️ ${result.action}部分Cookie成功`;
-        const content = result.ready
-            ? `当前共保存 ${result.total} 个可用账号`
-            : `已暂存账号信息，仍缺少字段：${result.missingFields.join(", ")}`;
-        $.msg($.name, subtitle, content);
-    } catch (e) {
-        throw e;
-    }
-}
-
-function loadUserCookies() {
-    const rawData = $.isNode() ? process.env[ckName] : $.getdata(ckName);
-    const parsed = $.toObj(rawData, []);
-    const list = Array.isArray(parsed) ? parsed : [];
-    const normalized = dedupeUsers(list);
-    if ($.toStr(list) !== $.toStr(normalized)) {
-        $.setjson(normalized, ckName);
-    }
-    return normalized;
-}
-
-function saveUserCookies() {
-    userCookie = dedupeUsers(userCookie);
-    $.setjson(userCookie, ckName);
-    return userCookie;
-}
-
-function upsertUserCookie(data) {
-    const normalized = normalizeUserRecord(data);
-    if (!normalized) throw new Error("获取Cookie失败，账号数据为空");
-
-    const index = findExistingUserIndex(userCookie, normalized);
-    const action = index === -1 ? "新增" : "更新";
-
-    if (index === -1) {
-        userCookie.push(normalized);
+  };
+  if (src.length < 2) throw new Error("inflate: too short");
+  const cmf = src[inPos++], flg = src[inPos++];
+  if ((cmf & 0x0f) !== 8 || ((cmf << 8) | flg) % 31 !== 0) throw new Error("inflate: bad header");
+  for (;;) {
+    const last = bits(1);
+    const type = bits(2);
+    if (type === 0) {
+      bitBuf = 0; bitCnt = 0;
+      const len = src[inPos] | (src[inPos + 1] << 8);
+      inPos += 4;
+      ensure(len);
+      for (let i = 0; i < len; i++) out[outLen++] = src[inPos++];
+    } else if (type === 1) {
+      const f = getFixed(); codes(f[0], f[1]);
+    } else if (type === 2) {
+      const hlit = bits(5) + 257, hdist = bits(5) + 1, hclen = bits(4) + 4;
+      const order = [16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15];
+      const cl = new Uint8Array(19);
+      for (let i = 0; i < hclen; i++) cl[order[i]] = bits(3);
+      const clH = buildHuff(cl);
+      const all = new Uint8Array(hlit + hdist);
+      let i = 0;
+      while (i < hlit + hdist) {
+        const sym = decode(clH);
+        if (sym < 16) { all[i++] = sym; continue; }
+        let len = 0, count = 0;
+        if (sym === 16) { len = all[i - 1]; count = 3 + bits(2); }
+        else if (sym === 17) { len = 0; count = 3 + bits(3); }
+        else { len = 0; count = 11 + bits(7); }
+        while (count-- && i < all.length) all[i++] = len;
+      }
+      codes(buildHuff(all.subarray(0, hlit)), buildHuff(all.subarray(hlit)));
     } else {
-        userCookie[index] = mergeUserRecords(userCookie[index], normalized);
+      throw new Error("inflate: bad block type");
     }
-
-    saveUserCookies();
-    const mergedRecord = index === -1 ? userCookie[userCookie.length - 1] : userCookie[index];
-    const missingFields = getMissingCaptureFields(mergedRecord);
-    return {
-        action,
-        total: userCookie.filter(isUsableUser).length,
-        ready: missingFields.length === 0,
-        missingFields
-    };
+    if (last) break;
+  }
+  return out.subarray(0, outLen);
 }
 
-function updateUserRecord(user, patch = {}) {
-    const index = findExistingUserIndex(userCookie, user);
-    if (index === -1) return;
+/** JPEG 亮度解码（只解 Y 分量，支持采样降尺寸） */
+const IDCT_COS = (() => {
+  const t = new Float32Array(64);
+  for (let x = 0; x < 8; x++) {
+    for (let u = 0; u < 8; u++) t[x * 8 + u] = Math.cos(((2 * x + 1) * u * Math.PI) / 16) * (u === 0 ? Math.SQRT1_2 : 1);
+  }
+  return t;
+})();
 
-    userCookie[index] = mergeUserRecords(userCookie[index], {
-        ...patch,
-        updatedAt: nowIso(),
-        lastSuccessAt: nowIso()
-    });
-    saveUserCookies();
-}
-
-function removeUserRecord(user, reason = "") {
-    const index = findExistingUserIndex(userCookie, user);
-    if (index === -1) return false;
-
-    const removed = userCookie.splice(index, 1)[0];
-    saveUserCookies();
-    $.log(`🧹 已清理失效Cookie：${removed?.userName || "微信用户"}${reason ? `，原因：${reason}` : ""}\n`);
-    return true;
-}
-
-function dedupeUsers(list = []) {
-    const merged = [];
-    for (const item of Array.isArray(list) ? list : []) {
-        const normalized = normalizeUserRecord(item);
-        if (!normalized) continue;
-
-        const index = findExistingUserIndex(merged, normalized);
-        if (index === -1) {
-            merged.push(normalized);
-        } else {
-            merged[index] = mergeUserRecords(merged[index], normalized);
-        }
+function idct8x8(block, out, stride, scratch) {
+  const tmp = scratch || new Float32Array(64);
+  for (let y = 0; y < 8; y++) {
+    const b = y * 8;
+    for (let x = 0; x < 8; x++) {
+      let s = 0;
+      for (let u = 0; u < 8; u++) s += IDCT_COS[x * 8 + u] * block[b + u];
+      tmp[b + x] = s;
     }
-    return merged;
-}
-
-function normalizeUserRecord(record = {}) {
-    if (!record || typeof record !== "object") return null;
-
-    const cookie = cleanCookieString(record.cookie);
-    const normalized = {
-        ...record,
-        userName: guessUserName(record, cookie),
-        nick_name: pickFirstValue(record.nick_name, record.nickName),
-        cookie,
-        token: sanitizeValue(record.token),
-        'x-lf-dxrisk-token': sanitizeValue(record['x-lf-dxrisk-token']),
-        'x-lf-channel': sanitizeValue(record['x-lf-channel']),
-        'x-lf-usertoken': sanitizeValue(record['x-lf-usertoken']),
-        'x-lf-bu-code': sanitizeValue(record['x-lf-bu-code']),
-        'x-lf-dxrisk-source': sanitizeValue(record['x-lf-dxrisk-source']),
-        memberId: pickFirstValue(record.memberId, record.member_id),
-        memberNo: pickFirstValue(record.memberNo, record.member_no),
-        userId: pickFirstValue(record.userId, record.user_id, record.uid),
-        mobile: pickFirstValue(record.mobile, record.phone),
-        phone: pickFirstValue(record.phone),
-        openId: pickFirstValue(record.openId, record.open_id, record.openid),
-        unionId: pickFirstValue(record.unionId, record.union_id, record.unionid),
-        accountKey: pickFirstValue(record.accountKey, getAccountKeyFromRecord(record, cookie)),
-        cookieId: pickFirstValue(record.cookieId, getStableCookieId(cookie)),
-        cookieFingerprint: pickFirstValue(record.cookieFingerprint, buildCookieFingerprint(cookie)),
-        updatedAt: normalizeTimestamp(record.updatedAt || record.lastCaptureAt || record.lastSuccessAt),
-        lastCaptureAt: normalizeTimestamp(record.lastCaptureAt),
-        lastSuccessAt: normalizeTimestamp(record.lastSuccessAt),
-        expiredAt: normalizeTimestamp(record.expiredAt),
-        expireReason: sanitizeValue(record.expireReason)
-    };
-
-    if (!normalized.cookie || normalized.expiredAt) return null;
-    return normalized;
-}
-
-function mergeUserRecords(current = {}, incoming = {}) {
-    return normalizeUserRecord({
-        ...current,
-        ...incoming,
-        userName: pickFirstValue(incoming.userName, incoming.nick_name, current.userName, current.nick_name, "微信用户"),
-        nick_name: pickFirstValue(incoming.nick_name, current.nick_name),
-        cookie: pickFirstValue(incoming.cookie, current.cookie),
-        token: pickFirstValue(incoming.token, current.token),
-        'x-lf-dxrisk-token': pickFirstValue(incoming['x-lf-dxrisk-token'], current['x-lf-dxrisk-token']),
-        'x-lf-channel': pickFirstValue(incoming['x-lf-channel'], current['x-lf-channel']),
-        'x-lf-usertoken': pickFirstValue(incoming['x-lf-usertoken'], current['x-lf-usertoken']),
-        'x-lf-bu-code': pickFirstValue(incoming['x-lf-bu-code'], current['x-lf-bu-code']),
-        'x-lf-dxrisk-source': pickFirstValue(incoming['x-lf-dxrisk-source'], current['x-lf-dxrisk-source']),
-        memberId: pickFirstValue(incoming.memberId, incoming.member_id, current.memberId, current.member_id),
-        memberNo: pickFirstValue(incoming.memberNo, incoming.member_no, current.memberNo, current.member_no),
-        userId: pickFirstValue(incoming.userId, incoming.user_id, incoming.uid, current.userId, current.user_id, current.uid),
-        mobile: pickFirstValue(incoming.mobile, current.mobile),
-        phone: pickFirstValue(incoming.phone, current.phone),
-        openId: pickFirstValue(incoming.openId, incoming.open_id, incoming.openid, current.openId, current.open_id, current.openid),
-        unionId: pickFirstValue(incoming.unionId, incoming.union_id, incoming.unionid, current.unionId, current.union_id, current.unionid),
-        accountKey: pickFirstValue(incoming.accountKey, current.accountKey),
-        cookieId: pickFirstValue(incoming.cookieId, current.cookieId),
-        cookieFingerprint: pickFirstValue(incoming.cookieFingerprint, current.cookieFingerprint),
-        updatedAt: pickLatestTime(incoming.updatedAt, incoming.lastCaptureAt, incoming.lastSuccessAt, current.updatedAt, current.lastCaptureAt, current.lastSuccessAt),
-        lastCaptureAt: pickLatestTime(incoming.lastCaptureAt, current.lastCaptureAt),
-        lastSuccessAt: pickLatestTime(incoming.lastSuccessAt, current.lastSuccessAt),
-        expiredAt: "",
-        expireReason: ""
-    });
-}
-
-function findExistingUserIndex(list = [], target = {}) {
-    let bestIndex = -1;
-    let bestScore = 0;
-
-    for (const [index, item] of list.entries()) {
-        const score = getMatchScore(item, target);
-        if (score > bestScore) {
-            bestIndex = index;
-            bestScore = score;
-        }
+  }
+  for (let x = 0; x < 8; x++) {
+    for (let y = 0; y < 8; y++) {
+      let s = 0;
+      for (let v = 0; v < 8; v++) s += IDCT_COS[y * 8 + v] * tmp[v * 8 + x];
+      const val = s * 0.25 + 128;
+      out[y * stride + x] = val < 0 ? 0 : val > 255 ? 255 : val;
     }
-    return bestScore > 0 ? bestIndex : -1;
+  }
 }
 
-function getMatchScore(current = {}, incoming = {}) {
-    const rules = [
-        ["accountKey", 100],
-        ["cookieId", 90],
-        ["x-lf-usertoken", 80],
-        ["token", 70],
-        ["cookieFingerprint", 60],
-        ["cookie", 50]
-    ];
+const JPEG_ZIGZAG = new Uint8Array([
+  0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+  12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+  35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+  58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
+]);
 
-    for (const [key, score] of rules) {
-        if (current?.[key] && incoming?.[key] && current[key] === incoming[key]) {
-            return score;
+function jpegBuildHuff(bits, values) {
+  const maxcode = new Int32Array(17), valptr = new Int32Array(17), mincode = new Int32Array(17);
+  let code = 0, k = 0;
+  for (let l = 1; l <= 16; l++) {
+    if (bits[l] > 0) {
+      valptr[l] = k; mincode[l] = code;
+      code += bits[l]; k += bits[l];
+      maxcode[l] = code - 1;
+    } else maxcode[l] = -1;
+    code <<= 1;
+  }
+  return { maxcode, valptr, mincode, values };
+}
+function jpegExtend(v, t) { return v < (1 << (t - 1)) ? v + (-1 << t) + 1 : v; }
+
+function decodeJpegLuma(bytes, scale) {
+  const st = scale && scale > 1 ? Math.round(scale) : 1;
+  if (!bytes || bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  let off = 2;
+  const qt = [], huffDC = [], huffAC = [];
+  let frame = null, restartInterval = 0;
+  while (off < bytes.length) {
+    if (bytes[off] !== 0xff) { off++; continue; }
+    let marker = bytes[off + 1];
+    while (marker === 0xff) { off++; marker = bytes[off + 1]; }
+    off += 2;
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (marker === 0xd9) break;
+    const len = (bytes[off] << 8) | bytes[off + 1];
+    const segStart = off + 2, segEnd = off + len;
+    if (marker === 0xdb) {
+      let p = segStart;
+      while (p < segEnd) {
+        const pq = bytes[p] >> 4, tq = bytes[p] & 15; p++;
+        const table = new Uint16Array(64);
+        for (let i = 0; i < 64; i++) {
+          if (pq) { table[i] = (bytes[p] << 8) | bytes[p + 1]; p += 2; } else table[i] = bytes[p++];
         }
+        qt[tq] = table;
+      }
+    } else if (marker === 0xc4) {
+      let p = segStart;
+      while (p < segEnd) {
+        const tc = bytes[p] >> 4, th = bytes[p] & 15; p++;
+        const bits = new Uint8Array(17);
+        let count = 0;
+        for (let i = 1; i <= 16; i++) { bits[i] = bytes[p++]; count += bits[i]; }
+        const values = new Uint8Array(count);
+        for (let i = 0; i < count; i++) values[i] = bytes[p++];
+        const t = jpegBuildHuff(bits, values);
+        if (tc === 0) huffDC[th] = t; else huffAC[th] = t;
+      }
+    } else if (marker === 0xdd) {
+      restartInterval = (bytes[segStart] << 8) | bytes[segStart + 1];
+    } else if (marker === 0xc0 || marker === 0xc1) {
+      const h = (bytes[segStart + 1] << 8) | bytes[segStart + 2];
+      const w = (bytes[segStart + 3] << 8) | bytes[segStart + 4];
+      const nf = bytes[segStart + 5];
+      const comps = [];
+      let p = segStart + 6;
+      for (let i = 0; i < nf; i++) {
+        comps.push({ id: bytes[p], h: bytes[p + 1] >> 4, v: bytes[p + 1] & 15, tq: bytes[p + 2] });
+        p += 3;
+      }
+      frame = { w, h, comps };
+    } else if (marker === 0xc2) {
+      return null; // 渐进式不支持
+    } else if (marker === 0xda) {
+      if (!frame) return null;
+      const ns = bytes[segStart];
+      let p = segStart + 1;
+      const scan = [];
+      for (let i = 0; i < ns; i++) { scan.push({ id: bytes[p], dc: bytes[p + 1] >> 4, ac: bytes[p + 1] & 15 }); p += 2; }
+      if (bytes[p] !== 0 || bytes[p + 1] !== 63) return null;
+      return decodeJpegScan(bytes, segEnd, frame, scan, qt, huffDC, huffAC, restartInterval, st);
+    }
+    off = segEnd;
+  }
+  return null;
+}
+
+function decodeJpegScan(bytes, start, frame, scan, qt, huffDC, huffAC, restartInterval, st) {
+  const W = frame.w, H = frame.h, comps = frame.comps;
+  const yComp = comps[0];
+  const maxH = Math.max.apply(null, comps.map((c) => c.h));
+  const maxV = Math.max.apply(null, comps.map((c) => c.v));
+  const mcux = Math.ceil(W / (8 * maxH)), mcuy = Math.ceil(H / (8 * maxV));
+  const planeW = mcux * yComp.h * 8, planeH = mcuy * yComp.v * 8;
+  const plane = new Float32Array(planeW * planeH);
+
+  let pos = start, bitBuf = 0, bitCnt = 0;
+  const nextByte = () => {
+    while (pos < bytes.length) {
+      const b = bytes[pos++];
+      if (b !== 0xff) return b;
+      const n = bytes[pos];
+      if (n === 0x00) { pos++; return 0xff; }
+      if (n >= 0xd0 && n <= 0xd7) { pos++; continue; }
+      if (n === 0xff) continue;
+      return 0;
     }
     return 0;
+  };
+  const getBit = () => { if (bitCnt === 0) { bitBuf = nextByte(); bitCnt = 8; } bitCnt--; return (bitBuf >> bitCnt) & 1; };
+  const decodeHuff = (t) => {
+    let code = getBit(), l = 1;
+    while (l <= 16 && (t.maxcode[l] === -1 || code > t.maxcode[l])) { code = (code << 1) | getBit(); l++; }
+    if (l > 16) return 0;
+    return t.values[t.valptr[l] + code - t.mincode[l]] || 0;
+  };
+  const receive = (n) => { let v = 0; for (let i = 0; i < n; i++) v = (v << 1) | getBit(); return v; };
+  const receiveExtend = (n) => (n === 0 ? 0 : jpegExtend(receive(n), n));
+
+  const pred = new Int32Array(comps.length);
+  const scans = comps.map((comp) => scan.find((item) => item.id === comp.id));
+  const blk = new Float32Array(64), pixels = new Float32Array(64), scratch = new Float32Array(64);
+  let eobrun = 0, mcuCount = 0;
+  for (let my = 0; my < mcuy; my++) {
+    for (let mx = 0; mx < mcux; mx++) {
+      if (restartInterval && mcuCount > 0 && mcuCount % restartInterval === 0) {
+        bitBuf = 0; bitCnt = 0;
+        while (pos < bytes.length && !(bytes[pos] === 0xff && bytes[pos + 1] >= 0xd0 && bytes[pos + 1] <= 0xd7)) pos++;
+        if (pos < bytes.length) pos += 2;
+        pred.fill(0); eobrun = 0;
+      }
+      mcuCount++;
+      for (let ci = 0; ci < comps.length; ci++) {
+        const comp = comps[ci];
+        const sc = scans[ci];
+        if (!sc) continue;
+        for (let by = 0; by < comp.v; by++) {
+          for (let bx = 0; bx < comp.h; bx++) {
+            blk.fill(0);
+            const t = decodeHuff(huffDC[sc.dc]);
+            pred[ci] += receiveExtend(t);
+            blk[0] = pred[ci] * ((qt[comp.tq] && qt[comp.tq][0]) || 1);
+            if (eobrun > 0) eobrun--;
+            else {
+              let k = 1;
+              while (k < 64) {
+                const rs = decodeHuff(huffAC[sc.ac]);
+                const r = rs >> 4, s = rs & 15;
+                if (s === 0) {
+                  if (r === 15) { k += 16; continue; }
+                  eobrun = (1 << r) - 1 + (r ? receive(r) : 0);
+                  break;
+                }
+                k += r;
+                if (k > 63) break;
+                const nat = JPEG_ZIGZAG[k];
+                blk[nat] = receiveExtend(s) * ((qt[comp.tq] && qt[comp.tq][nat]) || 1);
+                k++;
+              }
+            }
+            if (ci === 0) {
+              const outX = (mx * yComp.h + bx) * 8, outY = (my * yComp.v + by) * 8;
+              if (outY < Math.min(planeH, H)) {
+                idct8x8(blk, pixels, 8, scratch);
+                const rows = Math.min(8, H - outY);
+                const cols = Math.min(8, planeW - outX);
+                for (let yy = 0; yy < rows; yy++) {
+                  const dst = (outY + yy) * planeW + outX;
+                  for (let xx = 0; xx < cols; xx++) plane[dst + xx] = pixels[yy * 8 + xx];
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  const ow = Math.max(1, Math.floor(W / st)), oh = Math.max(1, Math.floor(H / st));
+  const gray = new Float32Array(ow * oh);
+  for (let y = 0; y < oh; y++) {
+    const rowBase = y * st * planeW, dstBase = y * ow;
+    for (let x = 0; x < ow; x++) gray[dstBase + x] = plane[rowBase + x * st];
+  }
+  return { w: ow, h: oh, gray, scale: st };
 }
 
-function isUsableUser(user = {}) {
-    return REQUIRED_CAPTURE_FIELDS.every((key) => Boolean(user?.[key]));
+/** 统一解码：JPEG 走亮度解码，PNG 走 inflate + 逐行滤波 */
+function decodeImage(bytes) {
+  if (!bytes || bytes.length < 8) return null;
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return decodeJpegLuma(bytes, JPEG_SCALE);
+  if (bytes[0] === 0x89 && bytes[1] === 0x50) return decodePng(bytes);
+  return null;
 }
 
-function buildUserProfilePatch(user, userInfo = {}) {
+function readU32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
+
+function decodePng(bytes) {
+  let off = 8, w = 0, h = 0, bitDepth = 8, colorType = 0;
+  const idat = [];
+  while (off + 8 <= bytes.length) {
+    const len = readU32(bytes, off);
+    const type = String.fromCharCode(bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]);
+    const ds = off + 8;
+    if (type === "IHDR") { w = readU32(bytes, ds); h = readU32(bytes, ds + 4); bitDepth = bytes[ds + 8]; colorType = bytes[ds + 9]; }
+    else if (type === "IDAT") idat.push(bytes.subarray(ds, ds + len));
+    else if (type === "IEND") break;
+    off = ds + len + 4;
+  }
+  if (!w || !h || bitDepth !== 8) return null;
+  let total = 0;
+  for (let i = 0; i < idat.length; i++) total += idat[i].length;
+  const rawIn = new Uint8Array(total);
+  let p = 0;
+  for (let i = 0; i < idat.length; i++) { rawIn.set(idat[i], p); p += idat[i].length; }
+  // 优先用宿主提供的 inflate（更快），失败则回退内置实现
+  let raw = null;
+  try {
+    if (typeof $utils !== "undefined" && $utils && typeof $utils.inflate === "function") raw = $utils.inflate(rawIn);
+  } catch (e) { raw = null; }
+  if (!raw || !raw.length) raw = inflate(rawIn);
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : colorType === 4 ? 2 : 0;
+  if (!channels) return null;
+  const stride = w * channels;
+  const out = new Uint8Array(stride * h);
+  let sp = 0;
+  for (let y = 0; y < h; y++) {
+    const filter = raw[sp++];
+    const row = raw.subarray(sp, sp + stride); sp += stride;
+    const cur = out.subarray(y * stride, (y + 1) * stride);
+    const prev = y > 0 ? out.subarray((y - 1) * stride, y * stride) : null;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= channels ? cur[x - channels] : 0;
+      const b = prev ? prev[x] : 0;
+      const c = prev && x >= channels ? prev[x - channels] : 0;
+      let v = row[x];
+      if (filter === 1) v = (v + a) & 0xff;
+      else if (filter === 2) v = (v + b) & 0xff;
+      else if (filter === 3) v = (v + ((a + b) >> 1)) & 0xff;
+      else if (filter === 4) {
+        const pp = a + b - c;
+        const pa = Math.abs(pp - a), pb = Math.abs(pp - b), pc = Math.abs(pp - c);
+        v = (v + (pa <= pb && pa <= pc ? a : pb <= pc ? b : c)) & 0xff;
+      }
+      cur[x] = v;
+    }
+  }
+  const gray = new Float32Array(w * h);
+  let alpha = null;
+  for (let i = 0, q = 0; i < w * h; i++, q += channels) {
+    if (channels === 1 || channels === 2) gray[i] = out[q];
+    else gray[i] = 0.299 * out[q] + 0.587 * out[q + 1] + 0.114 * out[q + 2];
+    if (channels === 4 || channels === 2) {
+      if (!alpha) alpha = new Uint8Array(w * h);
+      alpha[i] = out[q + channels - 1];
+    }
+  }
+  return { w, h, gray, alpha };
+}
+
+/* ==========================================================================
+ * 一·五、顶象 ac 生成器（从小程序插件 wx16c573059683b2ca 提取，纯 JS 无浏览器依赖）
+ *   ac = version + "#" + customBase64(_ua)
+ *   _ua 由数据块拼接：[type(1) + length(2,BE) + 密文]，每块用各自的密钥异或
+ *   块类型：1=TM 2=BR 3=SC 4=LO 5=CF 6=DI 7=EM 8=JSV 9=TK 10=temp 15=TC 16=TMV 17=SA 18=CA
+ *   插件不用 Canvas/WebGL，只用 wx.getSystemInfoSync()，因此可移植到 Loon。
+ * ========================================================================== */
+/*
+ * ac-plugin.js —— 顶象 ac 生成器（从小程序插件 wx16c573059683b2ca 提取，纯 JS 无浏览器依赖）
+ *
+ * 算法来源：插件 appservice.js 模块 4204（greenseer 内联实现），逐行移植。
+ *   ac = version + "#" + customBase64(_ua)
+ *   _ua = 各数据块拼接：[type(1字节) + 长度2字节 + 密文]
+ *   块类型：1=TM 2=BR 3=SC 4=LO 5=CF 6=DI 7=EM 8=JSV 9=TK 10=temp 15=TC 16=TMV 17=SA 18=CA
+ *
+ * 重要：插件版只用 wx.getSystemInfoSync()，不需要 Canvas/WebGL，因此可移植到 Loon。
+ */
+
+
+/* ---------- 常量 ---------- */
+const ALPHABET = "XmYj3u1PnvisIZUF8ThR/a6DfO+kW4JHrCELycAzSxleoQp02MtwV9Nd57qGgbKB=";
+const DEFAULTS = {
+  token: "", form: "", inputName: "ua",
+  maxMDLog: 10, maxMMLog: 20, maxSALog: 250, maxKDLog: 10, maxFocusLog: 6,
+  maxTCLog: 10, maxTMVLog: 20, MMInterval: 50, TMVInterval: 50,
+};
+
+/* ---------- 小工具（与插件一致） ---------- */
+const isArray = Array.isArray;
+const now = () => Date.now();
+function pack(t, e, n) { return (t >> e) & ((1 << (8 * (n === undefined ? 1 : n))) - 1); }
+function g(t) { return [pack(t, 8), pack(t, 0)]; }              // 数字 -> 2 字节（大端）
+function h(t) { const e = []; if (!t) return e; for (let n = 0; n < t.length; n++) e.push(t.charCodeAt(n)); return e; }
+function C(t) { return g(pack(t, 16, 2)).concat(g(pack(t, 0, 2))); } // 32 位 -> 4 字节
+function M(t) { let e = ""; for (let n = 0; n < t.length; n++) e += String.fromCharCode(t[n]); return e; }
+function each(t, e, n) {
+  if (!t) return;
+  let i = 0; const r = t.length;
+  if (r === +r) for (; i < r && e.call(n, t[i], i, t) !== false; i++);
+  else for (i in t) if (t.hasOwnProperty(i) && e.call(n, t[i], i, t) === false) break;
+}
+function flatten(t) { const e = []; each(t, (x) => { if (x !== undefined) { if (isArray(x)) e.push.apply(e, x); else e.push(x); } }); return e; }
+function customB64(t) {
+  if (!t) return "";
+  let out = "", u = 0;
+  while (u < t.length) {
+    const e = t.charCodeAt(u++);
+    const n = t.charCodeAt(u++);
+    const i = t.charCodeAt(u++);
+    const r = e >> 2;
+    const a = ((3 & e) << 4) | (n >> 4);
+    const o = ((15 & n) << 2) | (i >> 6);
+    const c = 63 & i;
+    let oo = o, cc = c;
+    if (isNaN(n)) { oo = 64; cc = 64; } else if (isNaN(i)) { cc = 64; }
+    out += ALPHABET.charAt(r) + ALPHABET.charAt(a) + ALPHABET.charAt(o || oo ? oo : o) + ALPHABET.charAt(cc);
+  }
+  return out;
+}
+
+/* ---------- 各数据块加密（逐一对应插件实现） ---------- */
+function encTM(t) { let e = "", n = 0; for (; n < t.length; n++) { const i = t.charCodeAt(n); const r = ((i >> 4) + (i << 4) + 15273) & 255; e += String.fromCharCode(r); } return e; }
+function encBR(t) { let e = "", n = 821; for (let i = 0; i < t.length; i++) { n = ((240 & (n << 4 ^ n)) + (n >> 7)) & 0xffff; e += String.fromCharCode(255 & (t.charCodeAt(i) ^ n)); } return e; }
+function encSC(t) { let e = "", n = 43221; for (let i = 0; i < t.length; i++) { const r = t.charCodeAt(i) ^ n; n = (n * i % 256 + 24671) & 0xffffff; e += String.fromCharCode(255 & r); } return e; }
+function encLO(t) { let e = "", n = 312; for (let i = 0; i < t.length; i++) { n = ((240 & (n << 2 ^ n)) + (n >> 5)) & 0xffff; e += String.fromCharCode(255 & (t.charCodeAt(i) ^ n)); } return e; }
+function encCF(t) { let e = "", n = 34313; for (let i = 0; i < t.length; i++) { const r = t.charCodeAt(i) ^ n; n = r; e += String.fromCharCode(255 & r); } return e; }
+function encDI(t) { let e = "", n = 156; for (let i = 0; i < t.length; i++) { n = ((240 & (n << 6 ^ n)) + (n >> 4)) & 0xffff; e += String.fromCharCode(255 & (t.charCodeAt(i) ^ n)); } return e; }
+function encEM(t) { let e = "", n = 0; for (; n < t.length; n++) { const i = (t.charCodeAt(n) - 6) & 255; e += String.fromCharCode(((i >> 3) + (i << 5)) & 255); } return e; }
+function encJSV(t) { let e = "", n = 32; const k = "VxMpoN86g7lA"; for (let i = 0; i < t.length; i++) { let r = t.charCodeAt(i); r ^= k.charCodeAt(n = (n + 3) % 12); e += String.fromCharCode(255 & r); } return e; }
+function encTK(t) { let e = "", n = 2422; for (let i = 0; i < t.length; i++) { const r = t.charCodeAt(i) ^ n; n += 2; if (n >= 2147483647) n = 2372; e += String.fromCharCode(255 & r); } return e; }
+function encTemp(t) { let e = "", n = 44; const k = "C6Br4b6f7NgK"; for (let i = 0; i < t.length; i++) { let r = t.charCodeAt(i); r ^= k.charCodeAt(n = (n + 4) % 12); e += String.fromCharCode(255 & r); } return e; }
+function encTC(t) { let e = "", n = 62639; for (let i = 0; i < t.length; i++) { const r = t.charCodeAt(i) ^ n; n = r; e += String.fromCharCode(255 & r); } return e; }
+function encTMV(t) { let e = "", n = 72; const k = "Vc6B8H8lDJ"; for (let i = 0; i < t.length; i++) { let r = t.charCodeAt(i); r ^= k.charCodeAt(n = (n + 1) % 10); e += String.fromCharCode(255 & r); } return e; }
+function encSA(t) { let e = "", n = 33265; for (let i = 0; i < t.length; i++) { const r = 255 & (t.charCodeAt(i) ^ n); e += String.fromCharCode(r); n = r; } return e; }
+function encCA(t) { let e = "", n = 147; for (let i = 0; i < t.length; i++) { n = ((240 & (n << 3 ^ n)) + (n >> 4)) & 0xffff; e += String.fromCharCode(255 & (t.charCodeAt(i) ^ n)); } return e; }
+
+/* ---------- UA 主体 ---------- */
+class UaGen {
+  constructor(option) {
+    this.option = Object.assign({}, DEFAULTS, option || {});
+    this.version = this.option.version || "-1";
+    this.jsv = this.option.jsv === undefined ? 1 : this.option.jsv;
+    this.sys = this.option.sys || UaGen.defaultSys();
+    this.genCharSet();
+    this.reload(true);
+  }
+  /** 迷你程序环境提供；Loon 里用默认值 */
+  static defaultSys() {
     return {
-        userName: pickFirstValue(userInfo.nick_name, user.userName),
-        nick_name: pickFirstValue(userInfo.nick_name, user.nick_name),
-        memberId: pickFirstValue(userInfo.member_id, userInfo.memberId, user.memberId),
-        memberNo: pickFirstValue(userInfo.member_no, userInfo.memberNo, user.memberNo),
-        userId: pickFirstValue(userInfo.user_id, userInfo.userId, userInfo.uid, user.userId),
-        mobile: pickFirstValue(userInfo.mobile, userInfo.phone, user.mobile),
-        phone: pickFirstValue(userInfo.phone, user.phone),
-        openId: pickFirstValue(userInfo.open_id, userInfo.openId, userInfo.openid, user.openId),
-        unionId: pickFirstValue(userInfo.union_id, userInfo.unionId, userInfo.unionid, user.unionId),
-        accountKey: getAccountKeyFromRecord({ ...user, ...userInfo }, user.cookie),
-        lastSuccessAt: nowIso()
+      system: "iOS 15.8", screenWidth: 390, screenHeight: 844,
+      windowWidth: 375, windowHeight: 724, platform: "ios", version: "15.8",
+      brand: "iPhone", model: "iPhone", language: "zh_CN", fontSizeSetting: 16,
+      pixelRatio: 3, benchmarkLevel: 0,
     };
-}
-
-function getMissingCaptureFields(record = {}) {
-    return REQUIRED_CAPTURE_FIELDS.filter((field) => !sanitizeValue(record[field]));
-}
-
-function getResponseMessage(response = {}) {
-    return pickFirstValue(response.message, response.msg, response.errorMessage, response.error_msg);
-}
-
-function getAccountKeyFromRecord(record = {}, cookie = record.cookie) {
-    const directKey = pickFirstValue(
-        record.accountKey,
-        record.memberNo,
-        record.member_no,
-        record.memberId,
-        record.member_id,
-        record.userId,
-        record.user_id,
-        record.uid,
-        record.openId,
-        record.open_id,
-        record.openid,
-        record.unionId,
-        record.union_id,
-        record.unionid,
-        record.mobile,
-        record.phone
-    );
-    if (directKey) return directKey;
-
-    const cookieObject = parseCookieString(cookie);
-    const cookieIdentity = pickFirstValue(
-        getCookieValue(cookieObject, ["member_no", "memberno", "member_id", "memberid"]),
-        getCookieValue(cookieObject, ["user_id", "userid", "uid"]),
-        getCookieValue(cookieObject, ["openid", "open_id", "unionid", "union_id"]),
-        getCookieValue(cookieObject, ["mobile", "phone", "tel"])
-    );
-    return pickFirstValue(cookieIdentity, getStableCookieId(cookie), record['x-lf-usertoken']);
-}
-
-function guessUserName(record = {}, cookie = record.cookie) {
-    const cookieObject = parseCookieString(cookie);
-    return pickFirstValue(
-        record.userName,
-        record.nick_name,
-        record.nickName,
-        maskPhone(record.mobile),
-        maskPhone(record.phone),
-        maskPhone(getCookieValue(cookieObject, ["mobile", "phone", "tel"])),
-        getCookieValue(cookieObject, ["member_no", "memberno", "member_id", "memberid", "user_id", "userid", "uid", "openid", "unionid"]),
-        "微信用户"
-    );
-}
-
-function parseCookieString(cookie = "") {
-    const parsed = {};
-    for (const segment of sanitizeValue(cookie).split(";")) {
-        const item = segment.trim();
-        if (!item) continue;
-
-        const separatorIndex = item.indexOf("=");
-        const key = separatorIndex === -1 ? item : item.slice(0, separatorIndex).trim();
-        const value = separatorIndex === -1 ? "" : item.slice(separatorIndex + 1).trim();
-        if (!key) continue;
-        parsed[key] = value;
+  }
+  genCharSet() {
+    let t = "";
+    for (let n = 0; n < 256; n++) t += String.fromCharCode(n);
+    this._chars = t;
+  }
+  reload(skipStart) {
+    this.ua = ""; this._ua = ""; this._sa = []; this._ca = [];
+    this.tm = now();
+    this.counters = { sa: 0, mm: 0, md: 0, kd: 0, fo: 0, tc: 0, tmv: 0, mmInterval: 0, tmvInterval: 0 };
+    if (!skipStart) this.start();
+  }
+  start() {
+    this.getTM(); this.getBR(); this.getLO(); this.getCF(); this.getDI();
+    this.getEM(); this.getJSV(); this.getTK(); this.getSC();
+  }
+  getUA() { return this.ua; }
+  process(...args) {
+    let t = args.length === 1 && isArray(args[0]) ? args[0] : args;
+    return M(flatten(t));
+  }
+  app(type, payload) {
+    const head = M([type].concat(g(payload.length)));
+    this._ua += head + payload;
+    this.ua = this.version + "#" + customB64(this._ua);
+  }
+  getTM() {
+    const t = this.tm;
+    const e = this.process(C(t / Math.pow(2, 32)).concat(C(t)));
+    this.app(1, encTM(e));
+  }
+  getOS() {
+    const s = String((this.sys && this.sys.system) || "");
+    if (/iOS/i.test(s)) return 4;
+    if (/Android/i.test(s)) return 7;
+    return 0;
+  }
+  getBR() {
+    const t = this.getOS();
+    const e = this.process(t, 0, g(1), h("0"));
+    this.app(2, encBR(e));
+  }
+  getLO() {
+    const t = this.process(g(0), h(""), g(0), h(""));
+    this.app(4, encLO(t));
+  }
+  getCF() {
+    // 插件里是 [o(), d, D, l] 的随机挑选（画布指纹占位），这里用等价随机内容
+    const pool = [String(Math.random()).slice(2), String(now()), String(this.sys.model || "iPhone"), this._chars.slice(0, 32)];
+    const e = "" + pool[UaGen.rand(0, pool.length - 1)];
+    const n = UaGen.rand(0, Math.max(0, e.length - 10));
+    const i = UaGen.rand(2, 10);
+    const r = this.process(g(n), g(i), h(e.substr(n, i)));
+    this.app(5, encCF(r));
+  }
+  getDI() {
+    this.app(6, encDI(this.process(0)));
+  }
+  getEM() {
+    const t = parseInt("000000000000000000000000000000000000".substr(-32), 2) || 0;
+    this.app(7, encEM(this.process(C(t))));
+  }
+  getJSV() {
+    this.app(8, encJSV(this.process(C(this.jsv))));
+  }
+  getTK() {
+    const t = this.option.token;
+    if (t) this.app(9, encTK(this.process(g(t.length), h(t))));
+  }
+  getSC() {
+    const t = this.sys;
+    const e = [t.screenWidth, t.screenHeight, t.windowWidth, t.windowHeight, 0, 0, 0, 0, 0, 0].map((v) => g(v || 0));
+    this.app(3, encSC(this.process(e)));
+  }
+  getTC(t) {
+    const touch = (t.touches && t.touches[0]) || {};
+    const n = now() - this.tm;
+    const e = (t.target && t.target.id) || "";
+    const r = this.process(C(n), g(parseInt(touch.pageX || 0, 10)), g(parseInt(touch.pageY || 0, 10)), C(touch.identifier || 0), g(e.length), h(e));
+    this.app(15, encTC(r));
+  }
+  getTMV(t) {
+    const touch = (t.touches && t.touches[0]) || {};
+    const e = (t.target && t.target.id) || "";
+    const n = now() - this.tm;
+    const r = this.process(C(n), g(parseInt(touch.pageX || 0, 10)), g(parseInt(touch.pageY || 0, 10)), C(touch.identifier || 0), g(e.length), h(e));
+    this.app(16, encTMV(r));
+  }
+  recordSA(t) {
+    const e = now() - this.tm;
+    const x = (t && t.x) || 0, y = (t && t.y) || 0;
+    this._sa.push(encSA(this.process(C(e), g(x), g(y))));
+  }
+  sendSA() { this._sa.forEach((e) => this.app(17, e)); }
+  recordCA(t) {
+    const e = now() - this.tm;
+    this._ca.push(encCA(this.process(C(e), g(t.x), g(t.y))));
+  }
+  sendCA() { this._ca.forEach((e) => this.app(18, e)); }
+  reloadSA() { this.counters.sa = 0; this._sa = []; }
+  sendTemp(e) {
+    if (e && typeof e === "object") e = JSON.stringify(e);
+    // 插件：process(g(e.length), h(e)) —— 注意长度是"字符数两字节 + UTF8 长度"的拼接
+    this.app(10, encTemp(this.process(UaGen.bytes(g(e.length), UaGen.utf8(e)))));
+  }
+  static rand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+  /** 等价于插件的 bufFn：返回 [bufferLength, bytes...] */
+  static utf8(s) {
+    if (typeof Buffer !== "undefined") return Array.from(Buffer.from(s, "utf8"));
+    const out = [];
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c < 0x80) out.push(c);
+      else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
+      else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
     }
-    return parsed;
+    return out;
+  }
+  static bytes(a, b) {
+    const out = [];
+    out.push(255 & (a >> 0), 255 & (a >> 8), 255 & (a >> 16), 255 & (a >> 24));
+    for (let i = 0; i < b.length; i++) out.push(b[i]);
+    return out;
+  }
 }
 
-function cleanCookieString(cookie = "") {
-    const order = [];
-    const latestMap = {};
-    for (const segment of sanitizeValue(cookie).split(";")) {
-        const item = segment.trim();
-        if (!item) continue;
-
-        const separatorIndex = item.indexOf("=");
-        const key = separatorIndex === -1 ? item : item.slice(0, separatorIndex).trim();
-        const value = separatorIndex === -1 ? "" : item.slice(separatorIndex + 1).trim();
-        if (!key) continue;
-
-        if (!Object.prototype.hasOwnProperty.call(latestMap, key)) {
-            order.push(key);
-        }
-        latestMap[key] = value;
-    }
-
-    return order.map((key) => `${key}=${latestMap[key]}`).join("; ");
-}
-
-function buildCookieFingerprint(cookie = "") {
-    const cookieObject = parseCookieString(cookie);
-    return Object.keys(cookieObject)
-        .sort()
-        .map((key) => `${key}=${cookieObject[key]}`)
-        .join("; ");
-}
-
-function getStableCookieId(cookie = "") {
-    const cookieObject = parseCookieString(cookie);
-    return Object.keys(cookieObject)
-        .filter((key) => isStableCookieKey(key))
-        .sort()
-        .map((key) => `${key}=${cookieObject[key]}`)
-        .join("|");
-}
-
-function isStableCookieKey(key = "") {
-    const lowerKey = key.toLowerCase();
-    const maybeAccountField = /(member|user(?:_?id)?|uid|openid|open_id|unionid|union_id|mobile|phone|account|customer|person|owner)/i.test(lowerKey);
-    const volatileField = /(token|session|jsession|ticket|auth|risk|trace|nonce|sid|sso|tgc)/i.test(lowerKey);
-    return maybeAccountField && !volatileField;
-}
-
-function getCookieValue(cookieObject = {}, candidateKeys = []) {
-    const lowerKeyMap = Object.fromEntries(
-        Object.entries(cookieObject).map(([key, value]) => [key.toLowerCase(), value])
-    );
-    for (const key of candidateKeys) {
-        const value = lowerKeyMap[key.toLowerCase()];
-        if (value) return value;
-    }
-    return "";
-}
-
-function sanitizeValue(value) {
-    if (value === null || value === undefined) return "";
-    return String(value).trim();
-}
-
-function pickFirstValue(...values) {
-    for (const value of values) {
-        const normalized = sanitizeValue(value);
-        if (normalized) return normalized;
-    }
-    return "";
-}
-
-function normalizeTimestamp(value) {
-    const normalized = sanitizeValue(value);
-    if (!normalized) return "";
-
-    const date = new Date(normalized);
-    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
-}
-
-function pickLatestTime(...values) {
-    const timestamps = values
-        .map((value) => normalizeTimestamp(value))
-        .filter(Boolean)
-        .map((value) => new Date(value).getTime());
-
-    if (!timestamps.length) return "";
-    return new Date(Math.max(...timestamps)).toISOString();
-}
-
-function nowIso() {
-    return new Date().toISOString();
-}
-
-function maskPhone(value) {
-    const normalized = sanitizeValue(value);
-    return /^\d{11}$/.test(normalized) ? normalized.replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2") : normalized;
+/**
+ * 生成 ac
+ * @param {object} o { sid, x, y, jsv, version, sys, token, ua? }
+ */
+function createAc(o) {
+  o = o || {};
+  const gen = new UaGen({
+    token: o.sid || o.token || "",
+    jsv: o.jsv === undefined ? 1 : o.jsv,
+    version: o.version || "-1",
+    sys: o.sys,
+  });
+  // sendTemp：插件里是 sendTemp("x=" + A + "&y=" + u)
+  gen.sendTemp("x=" + Number(o.x || 0) + "&y=" + Number(o.y || 0));
+  return gen.getUA();
 }
 
 
-//主程序执行入口
-!(async () => {
+
+
+/** 用插件算法生成 ac（Loon 环境） */
+function buildAcPlugin(sid, x, y, sysInfo) {
+  const gen = new UaGen({
+    token: sid,
+    jsv: 1,
+    version: $.getdata("lhtj_ac_version") || "-1",
+    sys: sysInfo || {
+      system: "iOS 15.8", screenWidth: 390, screenHeight: 844,
+      windowWidth: 375, windowHeight: 724, model: "iPhone", platform: "ios",
+    },
+  });
+  // 模拟滑动行为：一批位移采样 + 一次触摸开始/结束
+  const steps = 12;
+  const base = 760;
+  for (let i = 1; i <= steps; i++) {
+    gen.recordSA({ x: Math.round(base + (x * i) / steps), y: 320 });
+  }
+  gen.sendSA();
+  gen.getTC({ touches: [{ pageX: base, pageY: 320, identifier: 0 }], target: { id: "" } });
+  gen.getTMV({ touches: [{ pageX: base + x, pageY: 320, identifier: 0 }], target: { id: "" } });
+  // 插件：sendTemp("x=" + (Math.round(dx)+10) + "&y=" + coverY)
+  gen.sendTemp("x=" + (Math.round(x) + 10) + "&y=" + Number(y || 0));
+  return gen.getUA();
+}
+
+/* ==========================================================================
+ * 二、请求层（Loon）
+ * ========================================================================== */
+function httpReq(o) {
+  return new Promise((resolve) => {
+    const opt = { url: o.url, headers: o.headers || {}, timeout: o.timeout || 15000,
+      body: o.body, "auto-cookie": false };
+    if (o.binary) opt["binary-mode"] = true;
+    let settled = false;
+    const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
+    const cb = (err, resp, data) => {
+      if (err) { log("请求失败：网络或超时错误"); return finish(null); }
+      finish({ status: Number(resp && (resp.status || resp.statusCode)),
+        headers: (resp && resp.headers) || {}, body: data });
+    };
     try {
-        if (typeof $request != "undefined") {
-            await getCookie();
-        } else {
-            await main();
-        }
-    } catch (e) {
-        throw e;
+      const method = String(o.method || "GET").toLowerCase();
+      if (!$.http || typeof $.http[method] !== "function") {
+        log("请求失败：HTTP 客户端不可用"); return finish(null);
+      }
+      $.http[method](opt, cb);
+    } catch (e) { log("请求失败：HTTP 客户端异常"); finish(null); }
+  });
+}
+
+/** 不自动重试写操作，避免超时后重复签到或消耗抽奖机会。 */
+async function apiRequest(o) {
+  if ($.ckExpired) return null;
+  const headers = Object.assign({}, o.headers || {});
+  const body = o.body === undefined ? undefined : (o.form ? queryStr(o.body) : JSON.stringify(o.body));
+  if (body !== undefined && !hasHeader(headers, "content-type")) {
+    headers["Content-Type"] = o.form ? "application/x-www-form-urlencoded" : "application/json;charset=UTF-8";
+  }
+  const res = await httpReq({ url: o.url, method: o.method || "GET", headers, body, timeout: o.timeout });
+  if (!res) return null;
+  let obj = res.body;
+  if (typeof obj === "string") { try { obj = JSON.parse(obj); } catch (e) { obj = null; } }
+  if (obj && typeof obj === "object" && !Array.isArray(obj) && String(obj.code) !== "0000" &&
+      EXPIRED_PATTERN.test(String(obj.message || obj.msg || ""))) {
+    $.ckStatus = false; $.ckExpired = true;
+  }
+  if (!(res.status >= 200 && res.status < 300)) {
+    log("请求失败：HTTP " + (res.status || "未知")); return null;
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    log("请求失败：响应不是 JSON 对象"); return null;
+  }
+  return obj;
+}
+
+function hasHeader(h, name) {
+  return Object.keys(h).some((k) => k.toLowerCase() === name);
+}
+function queryStr(o) {
+  return Object.keys(o).map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(o[k] === undefined || o[k] === null ? "" : o[k])}`).join("&");
+}
+
+/* ==========================================================================
+ * 三、滑块验证（顶象）—— 轻量定位 + token 复用
+ * ========================================================================== */
+
+/**
+ * o 字段解码（顶象插件模块 6225）：
+ * 挑战响应里的 o 形如 "dingxiangxxxx..."，它编码了背景图 32 列的置换顺序。
+ * 用它对背景图做列还原后，缺口匹配分数可从 ~0.2 提升到 ~0.9。
+ */
+function decodePermutation(o) {
+  const out = [];
+  const str = String(o || "");
+  for (let r = 0; r < str.length; r++) {
+    let a = str.charCodeAt(r);
+    if (r === 32) break;
+    let guard = 0;
+    while (out.indexOf(a % 32) > -1 && guard++ < 64) a++;
+    out[r] = a % 32;
+  }
+  return out;
+}
+
+/** 按置换还原背景图（第 perm[i] 列 -> 第 i 列），返回 {gray,w,h} */
+function unshuffleByPerm(bg, perm) {
+  const n = perm.length;
+  if (n < 2) return bg;
+  const w = bg.w, h = bg.h;
+  const base = Math.floor(w / n);
+  if (base < 1) return bg;
+  const cols = [];
+  for (let i = 0; i < n; i++) cols.push([i * base, i === n - 1 ? w : (i + 1) * base]);
+  const out = new Float32Array(w * h);
+  let x = 0;
+  for (let i = 0; i < n; i++) {
+    const src = Math.max(0, Math.min(n - 1, perm[i]));
+    const x0 = cols[src][0], x1 = cols[src][1];
+    const wc = x1 - x0;
+    for (let y = 0; y < h; y++) {
+      const srcRow = y * w + x0, dstRow = y * w + x;
+      for (let k = 0; k < wc; k++) out[dstRow + k] = bg.gray[srcRow + k];
     }
-})()
-    .catch((e) => { $.logErr(e), $.msg($.name, `⛔️ script run error!`, e.message || e) })
-    .finally(async () => {
-        $.done({});
+    x += wc;
+  }
+  return { w: w, h: h, gray: out, scale: bg.scale || 1 };
+}
+
+/** 灰度图上的边缘图（Sobel 近似，归一化 0..255） */
+function edgeMap(gray, w, h) {
+  const out = new Float32Array(w * h);
+  let max = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const gx = -gray[i - w - 1] + gray[i - w + 1] - 2 * gray[i - 1] + 2 * gray[i + 1] - gray[i + w - 1] + gray[i + w + 1];
+      const gy = -gray[i - w - 1] - 2 * gray[i - w] - gray[i - w + 1] + gray[i + w - 1] + 2 * gray[i + w] + gray[i + w + 1];
+      const m = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+      out[i] = m;
+      if (m > max) max = m;
+    }
+  }
+  if (max > 0) for (let i = 0; i < out.length; i++) out[i] = (out[i] * 255) / max;
+  return out;
+}
+
+/**
+ * 边缘轮廓匹配：用拼图 alpha 轮廓在背景边缘图上做 NCC。
+ * 返回 { x, y, score }，x/y 为采样图坐标（乘 scale 可还原到原图坐标）。
+ */
+function matchGapEdge(bgGray, bgW, bgH, piece, rowMin, rowMax) {
+  if (!bgGray || !piece || !piece.gray || !piece.alpha) return null;
+  const pw = piece.w, ph = piece.h, mask = piece.alpha;
+  let minX = pw, minY = ph, maxX = -1, maxY = -1;
+  for (let y = 0; y < ph; y++) {
+    for (let x = 0; x < pw; x++) {
+      if (mask[y * pw + x] > 127) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const tw = maxX - minX + 1, th = maxY - minY + 1;
+  if (tw >= bgW || th >= bgH) return null;
+  const bgEdge = edgeMap(bgGray, bgW, bgH);
+  const px = [], py = [], pc = [];
+  let n = 0, tmu = 0;
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) {
+      const sx = minX + x, sy = minY + y;
+      if (mask[sy * pw + sx] <= 127) continue;
+      let e = 0;
+      if (sx === 0 || sx === pw - 1 || mask[sy * pw + sx - 1] <= 127 || mask[sy * pw + sx + 1] <= 127) e = 1;
+      if (sy === 0 || sy === ph - 1 || mask[(sy - 1) * pw + sx] <= 127 || mask[(sy + 1) * pw + sx] <= 127) e = 1;
+      px.push(x); py.push(y); pc.push(e); tmu += e; n++;
+    }
+  }
+  if (n < 16) return null;
+  tmu /= n;
+  let tss = 0;
+  for (let i = 0; i < n; i++) { pc[i] -= tmu; tss += pc[i] * pc[i]; }
+  if (tss <= 1e-6) return null;
+  const y0 = Math.max(0, rowMin === undefined ? 0 : rowMin);
+  const y1 = Math.min(bgH - th, rowMax === undefined ? bgH - th : rowMax);
+  let best = { score: -2, x: 0, y: 0 };
+  for (let oy = y0; oy <= y1; oy += 2) {
+    for (let ox = Math.max(0, Math.round(bgW * 0.05)); ox + tw <= bgW; ox += 2) {
+      let wmu = 0;
+      for (let i = 0; i < n; i++) wmu += bgEdge[(oy + py[i]) * bgW + ox + px[i]];
+      wmu /= n;
+      let num = 0, wss = 0;
+      for (let i = 0; i < n; i++) {
+        const wv = bgEdge[(oy + py[i]) * bgW + ox + px[i]] - wmu;
+        num += pc[i] * wv; wss += wv * wv;
+      }
+      if (wss <= 1e-6) continue;
+      const score = num / Math.sqrt(tss * wss);
+      if (score > best.score) best = { score: score, x: ox, y: oy };
+    }
+  }
+  return best.score > -2 ? { score: best.score, x: best.x - minX, y: best.y - minY } : null;
+}
+
+/** 颜色内容匹配（在采样图上做，粗到细） */
+function matchGapColor(bgGray, bgW, bgH, piece, rowMin, rowMax) {
+  if (!bgGray || !piece || !piece.gray || !piece.alpha) return null;
+  const pw = piece.w, ph = piece.h, mask = piece.alpha, pg = piece.gray;
+  if (pw >= bgW || ph >= bgH) return null;
+  const pts = [];
+  for (let y = 1; y < ph - 1; y++) {
+    for (let x = 1; x < pw - 1; x++) {
+      if (mask[y * pw + x] > 127 && mask[y * pw + x - 1] > 127 && mask[y * pw + x + 1] > 127
+        && mask[(y - 1) * pw + x] > 127 && mask[(y + 1) * pw + x] > 127) pts.push(x, y, pg[y * pw + x]);
+    }
+  }
+  const n = pts.length / 3;
+  if (n < 100) return null;
+  let vm = 0;
+  for (let i = 2; i < pts.length; i += 3) vm += pts[i];
+  vm /= n;
+  let vss = 0;
+  for (let i = 2; i < pts.length; i += 3) { pts[i] -= vm; vss += pts[i] * pts[i]; }
+  if (vss <= 1e-6) return null;
+  const maxOx = bgW - pw, maxOy = bgH - ph;
+  const y0 = Math.max(0, rowMin === undefined ? 0 : rowMin);
+  const y1 = Math.min(maxOy, rowMax === undefined ? maxOy : rowMax);
+  const scoreAt = (ox, oy) => {
+    let sum = 0, sum2 = 0, num = 0;
+    for (let i = 0; i < pts.length; i += 3) {
+      const value = bgGray[(oy + pts[i + 1]) * bgW + ox + pts[i]];
+      sum += value; sum2 += value * value; num += pts[i + 2] * value;
+    }
+    const wss = Math.max(0, sum2 - sum * sum / n);
+    return wss <= 1e-6 ? -2 : num / Math.sqrt(vss * wss);
+  };
+  // 全位置稀疏筛选，再对前 8 个候选精算，避免步长 3 跳过窄峰。
+  const stride = Math.max(1, Math.ceil(n / 96)), sample = [];
+  let sampleMean = 0, sampleSS = 0;
+  for (let i = 0; i < n; i += stride) { sample.push(i * 3); sampleMean += pts[i * 3 + 2]; }
+  sampleMean /= sample.length;
+  for (const i of sample) sampleSS += Math.pow(pts[i + 2] - sampleMean, 2);
+  if (sampleSS <= 1e-6) return null;
+  const candidates = [];
+  for (let oy = Math.ceil(y0); oy <= y1; oy++) {
+    for (let ox = Math.round(bgW * 0.05); ox <= maxOx; ox++) {
+      let sum = 0, sum2 = 0, num = 0;
+      for (const i of sample) {
+        const value = bgGray[(oy + pts[i + 1]) * bgW + ox + pts[i]];
+        sum += value; sum2 += value * value; num += (pts[i + 2] - sampleMean) * value;
+      }
+      const variance = Math.max(0, sum2 - sum * sum / sample.length);
+      const score = variance <= 1e-6 ? -2 : num / Math.sqrt(sampleSS * variance);
+      if (score > -2 && (candidates.length < 8 || score > candidates[candidates.length - 1].score)) {
+        candidates.push({score: score, x: ox, y: oy});
+        candidates.sort((a, b) => b.score - a.score);
+        if (candidates.length > 8) candidates.pop();
+      }
+    }
+  }
+  let best = { score: -2, x: 0, y: 0 };
+  for (const candidate of candidates) {
+    const score = scoreAt(candidate.x, candidate.y);
+    if (score > best.score) best = { score: score, x: candidate.x, y: candidate.y };
+  }
+  return best.score > -2 ? best : null;
+}
+
+function pieceAlphaTop(piece) {
+  if (!piece || !piece.alpha) return null;
+  const pw = piece.w, ph = piece.h;
+  for (let y = 0; y < ph; y++) for (let x = 0; x < pw; x++) if (piece.alpha[y * pw + x] > 127) return y;
+  return null;
+}
+
+/** 从一个挑战里定位缺口（返回原图坐标系 x） */
+function locateGap(bg, piece, challengeY, oValue) {
+  // 优先：用服务端返回的 o 字段做列置换还原（插件官方算法），定位精度最高
+  if (oValue) {
+    try {
+      const perm = decodePermutation(oValue);
+      if (perm.length > 1) {
+        const restored = unshuffleByPerm(bg, perm);
+        const r = locateGapInner(restored, piece, challengeY, "o");
+        if (r) return r;
+      }
+    } catch (e) { /* 回退 */ }
+  }
+  return locateGapInner(bg, piece, challengeY, "raw");
+}
+
+function locateGapInner(bg, piece, challengeY, tag) {
+  const scale = bg.scale || 1;
+  const aTop = pieceAlphaTop(piece) || 0;
+  // 几何约束：拼图 alpha 顶部应对齐 challenge.y（原图坐标）
+  let rowMin, rowMax;
+  if (challengeY !== undefined && challengeY !== null) {
+    const expect = Math.round(challengeY / scale) - aTop;
+    rowMin = Math.max(0, expect - 6);
+    rowMax = Math.max(0, expect + 6);
+  }
+  const edge = matchGapEdge(bg.gray, bg.w, bg.h, piece,
+    rowMin === undefined ? undefined : rowMin + aTop, rowMax === undefined ? undefined : rowMax + aTop);
+  const color = matchGapColor(bg.gray, bg.w, bg.h, piece, rowMin, rowMax);
+  let pick = null;
+  if (edge && color) pick = color.score >= edge.score ? color : edge;
+  else pick = color || edge;
+  if (!pick || !Number.isFinite(pick.score) || pick.score < 0.35) return null;
+  return { x: pick.x * scale, y: pick.y * scale, score: pick.score, from: tag + "/" + (pick === color ? "color" : "edge") };
+}
+
+/** Loon binary-mode 返回 Uint8Array；兼容旧模拟器的 Base64 返回值。 */
+async function readBinary(url, headers) {
+  const res = await httpReq({ url: url, method: "GET", headers: headers, binary: true, timeout: 20000 });
+  if (!res || !res.body) return null;
+  if (!(res.status >= 200 && res.status < 300)) return null;
+  const data = res.body;
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  return typeof data === "string" ? base64ToBytes(data) : null;
+}
+
+function base64ToBytes(b64) {
+  const clean = String(b64).replace(/^data:[^,]+,/, "").replace(/\s/g, "");
+  const out = new Uint8Array(clean.length * 3 / 4 | 0);
+  let p = 0;
+  const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const map = {};
+  for (let i = 0; i < table.length; i++) map[table[i]] = i;
+  let buffer = 0, bits = 0;
+  for (let i = 0; i < clean.length; i++) {
+    const ch = clean[i];
+    if (ch === "=") break;
+    const v = map[ch];
+    if (v === undefined) continue;
+    buffer = (buffer << 6) | v;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[p++] = (buffer >> bits) & 0xff; }
+  }
+  return out.subarray(0, p);
+}
+
+/** 凭证地址：默认走小程序通道 w1；可被 lhtj_constid_path 覆盖（c1/w1） */
+function constIdUrl(aid) {
+  const p = $.getdata("lhtj_constid_path") || CONSTID_PATH_DEFAULT;
+  return C1_HOST + "/udid/" + p + "?aid=" + encodeURIComponent(aid) + "&ak=" + SLIDER_AK + "&jsv=" + SLIDER_JSV;
+}
+
+function makeAid() {
+  return "dx-" + Date.now() + "-" + (1000000 + Math.floor(Math.random() * 90000000)) + "-1";
+}
+
+/**
+ * 外部求解服务：把 p1/p2/y 交给服务端（浏览器辅助或打码平台），拿回 token。
+ * 约定响应：{ "token": "<verifyToken>", "c": "<constId>" } 或 { "token": "<verifyToken>:<constId>" }
+ */
+async function solveBySolver(solverUrl, log) {
+  try {
+    const aid = makeAid();
+    let constId = "";
+    const c1 = await httpReq({ url: constIdUrl(aid), timeout: 10000 });
+    const m = String((c1 && c1.body) || "").replace(/&quot;/g, '"').match(/"data"\s*:\s*"([^"]+)"/);
+    if (m) constId = m[1];
+    const headers = { "User-Agent": UA_APP, Referer: "https://longzhu.longfor.com/", Origin: "https://longzhu.longfor.com", Accept: "*/*" };
+    const q = "?w=300&h=150&s=50&ak=" + SLIDER_AK + "&c=" + encodeURIComponent(constId) + "&jsv=" + SLIDER_JSV
+      + "&aid=" + encodeURIComponent(aid) + "&wp=1&de=0&uid=&lf=0&tpc=&_r=" + Math.random();
+    const chRes = await httpReq({ url: SLIDER_HOST + "/api/a" + q, headers: headers, timeout: 10000 });
+    let ch = null;
+    try { ch = JSON.parse(chRes.body); } catch (e) { }
+    if (!ch || !ch.sid) return "";
+    const res = await apiRequest({
+      url: solverUrl, method: "POST", timeout: 60000,
+      body: { sid: ch.sid, aid: aid, c: constId, y: ch.y, p1: SLIDER_HOST + ch.p1, p2: SLIDER_HOST + ch.p2, ua: UA_APP },
     });
-function getDateTime() {
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    if (!res) { log("滑块：外部服务无响应"); return ""; }
+    let token = str(res.token || res.data || res.captchaToken);
+    if (!token) { log("滑块：外部服务返回无效：" + $.toStr(res).slice(0, 120)); return ""; }
+    if (token.indexOf(":") < 0) token = token + ":" + str(res.c || constId);
+    log("滑块：外部服务返回 token 成功");
+    return token;
+  } catch (e) {
+    log("滑块：外部服务异常 " + e);
+    return "";
+  }
 }
-/** ---------------------------------固定不动区域----------------------------------------- */
-//prettier-ignore
-async function sendMsg(a) { a && ($.isNode() ? await notify.sendNotify($.name, a) : $.msg($.name, $.title || "", a, { "media-url": $.avatar })) }
-function DoubleLog(o) { o && ($.log(`${o}`), $.notifyMsg.push(`${o}`)) };
-function debug(g, e = "debug") { "true" === $.is_debug && ($.log(`\n-----------${e}------------\n`), $.log("string" == typeof g ? g : $.toStr(g) || `debug error => t=${g}`), $.log(`\n-----------${e}------------\n`)) }
-//From xream's ObjectKeys2LowerCase
-function ObjectKeys2LowerCase(obj = {}) { return Object.fromEntries(Object.entries(obj || {}).map(([k, v]) => [k.toLowerCase(), v])) };
-//From sliverkiss's Request
-async function Request(t) {
-    if ("string" == typeof t) t = { url: t };
-    try {
-        if (!t?.url) throw new Error("[发送请求] 缺少 url 参数");
 
-        let {
-            url,
-            type,
-            method,
-            headers = {},
-            body,
-            params,
-            dataType = "form",
-            resultType = "data"
-        } = t;
+/**
+ * 轻量滑块：取 c1 -> /api/a -> 图片 -> 定位 -> 提交。
+ * 外部服务优先；本地实验实现须显式开启，不对真实通过率作保证。
+ * @returns {Promise<string>} token 形如 "<token>:<c>"，失败返回 ""
+ */
+async function solveSlider(log) {
+  // 0) 外部求解服务（可选）：在 Loon 里配置 config 键 lhtj_solver_url 即可启用
+  //    服务端约定：POST JSON {sid, aid, c, y, p1, p2} -> {token} 或 {token, c}
+  const solverUrl = $.getdata("lhtj_solver_url");
+  if (solverUrl) {
+    const ext = await solveBySolver(solverUrl, log);
+    if (ext) return ext;
+  }
+  if ($.getdata("lhtj_enable_local_solver") !== "true") {
+    log("滑块：请在小程序完成验证或配置外部服务；本地实验求解默认关闭");
+    return "";
+  }
+  // 1) 动态凭证
+  let constId = "";
+  try {
+    const t = await httpReq({ url: constIdUrl(makeAid()), timeout: 10000 });
+    const text = (t && t.body) || "";
+    const un = String(text).replace(/&quot;/g, '"');
+    const m = un.match(/"data"\s*:\s*"([^"]+)"/);
+    if (m) constId = m[1];
+  } catch (e) { }
+  const headers = {
+    "User-Agent": UA_APP,
+    Referer: "https://longzhu.longfor.com/",
+    Origin: "https://longzhu.longfor.com",
+    Accept: "*/*",
+  };
+  const aid = makeAid();
+  const q = "?w=300&h=150&s=50&ak=" + SLIDER_AK + "&c=" + encodeURIComponent(constId) + "&jsv=" + SLIDER_JSV
+    + "&aid=" + encodeURIComponent(aid) + "&wp=1&de=0&uid=&lf=0&tpc=&_r=" + Math.random();
+  const chRes = await httpReq({ url: SLIDER_HOST + "/api/a" + q, headers: headers, timeout: 10000 });
+  let ch = null;
+  try { ch = JSON.parse(chRes.body); } catch (e) { }
+  if (!ch || !ch.sid) { log("滑块：取挑战失败"); return ""; }
 
-        const requestMethod = (type || method || ("body" in t ? "post" : "get")).toLowerCase();
-        const timeout = t.timeout ? $.isSurge() ? t.timeout / 1e3 : t.timeout : 1e4;
-        const queryString = params ? $.queryStr(params) : "";
-        const requestUrl = queryString ? `${url}${url.includes("?") ? "&" : "?"}${queryString}` : url;
-
-        if ("json" === dataType) headers["Content-Type"] = "application/json;charset=UTF-8";
-
-        const requestOptions = {
-            ...t,
-            ...(t?.opts || {}),
-            url: requestUrl,
-            headers,
-            timeout
-        };
-
-        if ("get" !== requestMethod && void 0 !== body) {
-            requestOptions.body = "json" === dataType ? $.toStr(body) : $.queryStr(body);
-        }
-
-        const response = await $.http[requestMethod](requestOptions);
-        return "data" === resultType ? $.toObj(response.body) || response.body : $.toObj(response) || response;
-    } catch (t) {
-        console.log(`❌请求发起失败！原因为：${t}`);
+  let x = 0, y = Number(ch.y || 0), from = "";
+  try {
+    const images = await Promise.all([
+      readBinary(SLIDER_HOST + ch.p1, headers),
+      readBinary(SLIDER_HOST + ch.p2, Object.assign({}, headers, { Accept: "image/*,*/*;q=0.8" }))
+    ]);
+    const p1 = images[0], p2 = images[1];
+    const bg = decodeImage(p1);
+    const piece = decodeImage(p2);
+    if (bg && piece) {
+      const loc = locateGap(bg, piece, y, ch.o);
+      if (loc) { x = Math.round(loc.x); from = loc.from + "/" + loc.score.toFixed(2); }
     }
+  } catch (e) { log("滑块：图片处理失败 " + e); }
+  if (!Number.isFinite(x) || x <= 0) { log("滑块：无可靠定位，停止提交"); return ""; }
+
+  // 用插件算法生成 ac
+  let ac = "";
+  try { ac = buildAcPlugin(ch.sid, x, y); } catch (e) { log("滑块：ac 生成失败 " + e); }
+  log("滑块：定位 dx=" + x + " -> 提交 x=" + (Math.round(x) + 10) + " y=" + y + " (" + from + "), ac=" + (ac ? ac.length + "B" : "无"));
+  // 提交：x 按插件公式 A = round(dx) + 10
+  // 注意：ac 里 sendTemp 的 x/y 必须与提交值完全一致（插件源码 _getVerifyParams 保证）
+  const submitX = Math.round(x) + 10;
+  const body = queryStr({ ac: ac, ak: SLIDER_AK, c: constId, uid: "", jsv: SLIDER_JSV, sid: ch.sid, aid: aid, x: submitX, y: y });
+  const vr = await httpReq({ url: SLIDER_HOST + "/api/v1", method: "POST", headers: Object.assign({}, headers, { "Content-Type": "application/x-www-form-urlencoded" }), body: body, timeout: 12000 });
+  let v = null;
+  try { v = JSON.parse(vr.body); } catch (e) { }
+  if (v && v.success && v.token) return v.token + ":" + constId;
+  log("滑块：未通过（" + ((v && (v.code || v.msg)) || "无响应") + "）");
+  return "";
 }
-//From chavyleung's Env.js
-function Env(t, e) { class s { constructor(t) { this.env = t } send(t, e = "GET") { t = "string" == typeof t ? { url: t } : t; let s = this.get; return "POST" === e && (s = this.post), new Promise(((e, r) => { s.call(this, t, ((t, s, a) => { t ? r(t) : e(s) })) })) } get(t) { return this.send.call(this.env, t) } post(t) { return this.send.call(this.env, t, "POST") } } return new class { constructor(t, e) { this.name = t, this.http = new s(this), this.data = null, this.dataFile = "box.dat", this.logs = [], this.isMute = !1, this.isNeedRewrite = !1, this.logSeparator = "\n", this.encoding = "utf-8", this.startTime = (new Date).getTime(), Object.assign(this, e), this.log("", `🔔${this.name}, 开始!`) } getEnv() { return "undefined" != typeof $environment && $environment["surge-version"] ? "Surge" : "undefined" != typeof $environment && $environment["stash-version"] ? "Stash" : "undefined" != typeof module && module.exports ? "Node.js" : "undefined" != typeof $task ? "Quantumult X" : "undefined" != typeof $loon ? "Loon" : "undefined" != typeof $rocket ? "Shadowrocket" : void 0 } isNode() { return "Node.js" === this.getEnv() } isQuanX() { return "Quantumult X" === this.getEnv() } isSurge() { return "Surge" === this.getEnv() } isLoon() { return "Loon" === this.getEnv() } isShadowrocket() { return "Shadowrocket" === this.getEnv() } isStash() { return "Stash" === this.getEnv() } toObj(t, e = null) { try { return JSON.parse(t) } catch { return e } } toStr(t, e = null) { try { return JSON.stringify(t) } catch { return e } } getjson(t, e) { let s = e; if (this.getdata(t)) try { s = JSON.parse(this.getdata(t)) } catch { } return s } setjson(t, e) { try { return this.setdata(JSON.stringify(t), e) } catch { return !1 } } getScript(t) { return new Promise((e => { this.get({ url: t }, ((t, s, r) => e(r))) })) } runScript(t, e) { return new Promise((s => { let r = this.getdata("@chavy_boxjs_userCfgs.httpapi"); r = r ? r.replace(/\n/g, "").trim() : r; let a = this.getdata("@chavy_boxjs_userCfgs.httpapi_timeout"); a = a ? 1 * a : 20, a = e && e.timeout ? e.timeout : a; const [i, o] = r.split("@"), n = { url: `http://${o}/v1/scripting/evaluate`, body: { script_text: t, mock_type: "cron", timeout: a }, headers: { "X-Key": i, Accept: "*/*" }, timeout: a }; this.post(n, ((t, e, r) => s(r))) })).catch((t => this.logErr(t))) } loaddata() { if (!this.isNode()) return {}; { this.fs = this.fs ? this.fs : require("fs"), this.path = this.path ? this.path : require("path"); const t = this.path.resolve(this.dataFile), e = this.path.resolve(process.cwd(), this.dataFile), s = this.fs.existsSync(t), r = !s && this.fs.existsSync(e); if (!s && !r) return {}; { const r = s ? t : e; try { return JSON.parse(this.fs.readFileSync(r)) } catch (t) { return {} } } } } writedata() { if (this.isNode()) { this.fs = this.fs ? this.fs : require("fs"), this.path = this.path ? this.path : require("path"); const t = this.path.resolve(this.dataFile), e = this.path.resolve(process.cwd(), this.dataFile), s = this.fs.existsSync(t), r = !s && this.fs.existsSync(e), a = JSON.stringify(this.data); s ? this.fs.writeFileSync(t, a) : r ? this.fs.writeFileSync(e, a) : this.fs.writeFileSync(t, a) } } lodash_get(t, e, s = void 0) { const r = e.replace(/\[(\d+)\]/g, ".$1").split("."); let a = t; for (const t of r) if (a = Object(a)[t], void 0 === a) return s; return a } lodash_set(t, e, s) { return Object(t) !== t || (Array.isArray(e) || (e = e.toString().match(/[^.[\]]+/g) || []), e.slice(0, -1).reduce(((t, s, r) => Object(t[s]) === t[s] ? t[s] : t[s] = Math.abs(e[r + 1]) >> 0 == +e[r + 1] ? [] : {}), t)[e[e.length - 1]] = s), t } getdata(t) { let e = this.getval(t); if (/^@/.test(t)) { const [, s, r] = /^@(.*?)\.(.*?)$/.exec(t), a = s ? this.getval(s) : ""; if (a) try { const t = JSON.parse(a); e = t ? this.lodash_get(t, r, "") : e } catch (t) { e = "" } } return e } setdata(t, e) { let s = !1; if (/^@/.test(e)) { const [, r, a] = /^@(.*?)\.(.*?)$/.exec(e), i = this.getval(r), o = r ? "null" === i ? null : i || "{}" : "{}"; try { const e = JSON.parse(o); this.lodash_set(e, a, t), s = this.setval(JSON.stringify(e), r) } catch (e) { const i = {}; this.lodash_set(i, a, t), s = this.setval(JSON.stringify(i), r) } } else s = this.setval(t, e); return s } getval(t) { switch (this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": return $persistentStore.read(t); case "Quantumult X": return $prefs.valueForKey(t); case "Node.js": return this.data = this.loaddata(), this.data[t]; default: return this.data && this.data[t] || null } } setval(t, e) { switch (this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": return $persistentStore.write(t, e); case "Quantumult X": return $prefs.setValueForKey(t, e); case "Node.js": return this.data = this.loaddata(), this.data[e] = t, this.writedata(), !0; default: return this.data && this.data[e] || null } } initGotEnv(t) { this.got = this.got ? this.got : require("got"), this.cktough = this.cktough ? this.cktough : require("tough-cookie"), this.ckjar = this.ckjar ? this.ckjar : new this.cktough.CookieJar, t && (t.headers = t.headers ? t.headers : {}, void 0 === t.headers.Cookie && void 0 === t.cookieJar && (t.cookieJar = this.ckjar)) } get(t, e = (() => { })) { switch (t.headers && (delete t.headers["Content-Type"], delete t.headers["Content-Length"], delete t.headers["content-type"], delete t.headers["content-length"]), t.params && (t.url += "?" + this.queryStr(t.params)), void 0 === t.followRedirect || t.followRedirect || ((this.isSurge() || this.isLoon()) && (t["auto-redirect"] = !1), this.isQuanX() && (t.opts ? t.opts.redirection = !1 : t.opts = { redirection: !1 })), this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": default: this.isSurge() && this.isNeedRewrite && (t.headers = t.headers || {}, Object.assign(t.headers, { "X-Surge-Skip-Scripting": !1 })), $httpClient.get(t, ((t, s, r) => { !t && s && (s.body = r, s.statusCode = s.status ? s.status : s.statusCode, s.status = s.statusCode), e(t, s, r) })); break; case "Quantumult X": this.isNeedRewrite && (t.opts = t.opts || {}, Object.assign(t.opts, { hints: !1 })), $task.fetch(t).then((t => { const { statusCode: s, statusCode: r, headers: a, body: i, bodyBytes: o } = t; e(null, { status: s, statusCode: r, headers: a, body: i, bodyBytes: o }, i, o) }), (t => e(t && t.error || "UndefinedError"))); break; case "Node.js": let s = require("iconv-lite"); this.initGotEnv(t), this.got(t).on("redirect", ((t, e) => { try { if (t.headers["set-cookie"]) { const s = t.headers["set-cookie"].map(this.cktough.Cookie.parse).toString(); s && this.ckjar.setCookieSync(s, null), e.cookieJar = this.ckjar } } catch (t) { this.logErr(t) } })).then((t => { const { statusCode: r, statusCode: a, headers: i, rawBody: o } = t, n = s.decode(o, this.encoding); e(null, { status: r, statusCode: a, headers: i, rawBody: o, body: n }, n) }), (t => { const { message: r, response: a } = t; e(r, a, a && s.decode(a.rawBody, this.encoding)) })) } } post(t, e = (() => { })) { const s = t.method ? t.method.toLocaleLowerCase() : "post"; switch (t.body && t.headers && !t.headers["Content-Type"] && !t.headers["content-type"] && (t.headers["content-type"] = "application/x-www-form-urlencoded"), t.headers && (delete t.headers["Content-Length"], delete t.headers["content-length"]), void 0 === t.followRedirect || t.followRedirect || ((this.isSurge() || this.isLoon()) && (t["auto-redirect"] = !1), this.isQuanX() && (t.opts ? t.opts.redirection = !1 : t.opts = { redirection: !1 })), this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": default: this.isSurge() && this.isNeedRewrite && (t.headers = t.headers || {}, Object.assign(t.headers, { "X-Surge-Skip-Scripting": !1 })), $httpClient[s](t, ((t, s, r) => { !t && s && (s.body = r, s.statusCode = s.status ? s.status : s.statusCode, s.status = s.statusCode), e(t, s, r) })); break; case "Quantumult X": t.method = s, this.isNeedRewrite && (t.opts = t.opts || {}, Object.assign(t.opts, { hints: !1 })), $task.fetch(t).then((t => { const { statusCode: s, statusCode: r, headers: a, body: i, bodyBytes: o } = t; e(null, { status: s, statusCode: r, headers: a, body: i, bodyBytes: o }, i, o) }), (t => e(t && t.error || "UndefinedError"))); break; case "Node.js": let r = require("iconv-lite"); this.initGotEnv(t); const { url: a, ...i } = t; this.got[s](a, i).then((t => { const { statusCode: s, statusCode: a, headers: i, rawBody: o } = t, n = r.decode(o, this.encoding); e(null, { status: s, statusCode: a, headers: i, rawBody: o, body: n }, n) }), (t => { const { message: s, response: a } = t; e(s, a, a && r.decode(a.rawBody, this.encoding)) })) } } time(t, e = null) { const s = e ? new Date(e) : new Date; let r = { "M+": s.getMonth() + 1, "d+": s.getDate(), "H+": s.getHours(), "m+": s.getMinutes(), "s+": s.getSeconds(), "q+": Math.floor((s.getMonth() + 3) / 3), S: s.getMilliseconds() }; /(y+)/.test(t) && (t = t.replace(RegExp.$1, (s.getFullYear() + "").substr(4 - RegExp.$1.length))); for (let e in r) new RegExp("(" + e + ")").test(t) && (t = t.replace(RegExp.$1, 1 == RegExp.$1.length ? r[e] : ("00" + r[e]).substr(("" + r[e]).length))); return t } queryStr(t) { let e = ""; for (const s in t) { let r = t[s]; null != r && "" !== r && ("object" == typeof r && (r = JSON.stringify(r)), e += `${s}=${r}&`) } return e = e.substring(0, e.length - 1), e } msg(e = t, s = "", r = "", a) { const i = t => { switch (typeof t) { case void 0: return t; case "string": switch (this.getEnv()) { case "Surge": case "Stash": default: return { url: t }; case "Loon": case "Shadowrocket": return t; case "Quantumult X": return { "open-url": t }; case "Node.js": return }case "object": switch (this.getEnv()) { case "Surge": case "Stash": case "Shadowrocket": default: return { url: t.url || t.openUrl || t["open-url"] }; case "Loon": return { openUrl: t.openUrl || t.url || t["open-url"], mediaUrl: t.mediaUrl || t["media-url"] }; case "Quantumult X": return { "open-url": t["open-url"] || t.url || t.openUrl, "media-url": t["media-url"] || t.mediaUrl, "update-pasteboard": t["update-pasteboard"] || t.updatePasteboard }; case "Node.js": return }default: return } }; if (!this.isMute) switch (this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": default: $notification.post(e, s, r, i(a)); break; case "Quantumult X": $notify(e, s, r, i(a)); case "Node.js": }if (!this.isMuteLog) { let t = ["", "==============📣系统通知📣=============="]; t.push(e), s && t.push(s), r && t.push(r), console.log(t.join("\n")), this.logs = this.logs.concat(t) } } log(...t) { t.length > 0 && (this.logs = [...this.logs, ...t]), console.log(t.join(this.logSeparator)) } logErr(t, e) { switch (this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": case "Quantumult X": default: this.log("", `❗️${this.name}, 错误!`, t); break; case "Node.js": this.log("", `❗️${this.name}, 错误!`, t.stack) } } wait(t) { return new Promise((e => setTimeout(e, t))) } done(t = {}) { const e = ((new Date).getTime() - this.startTime) / 1e3; switch (this.log("", `🔔${this.name}, 结束! 🕛 ${e} 秒`), this.log(), this.getEnv()) { case "Surge": case "Loon": case "Stash": case "Shadowrocket": case "Quantumult X": default: $done(t); break; case "Node.js": process.exit(1) } } }(t, e) }
+
+/* ==========================================================================
+ * 四、账号与缓存
+ * ========================================================================== */
+function loadUsers() {
+  const raw = $.getdata(ckName);
+  const parsed = $.toObj(raw, []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+function saveUsers(list) { return $.setdata($.toStr(list) || "[]", ckName); }
+
+function normalizeUser(r) {
+  if (!r || typeof r !== "object") return null;
+  const cookie = cleanCookie(r.cookie || r.Cookie || "");
+  const token = str(r.token || r["x-lf-usertoken"] || r.xLfUsertoken);
+  const u = {
+    userName: str(r.userName || r.nick_name || "微信用户"),
+    cookie: cookie,
+    token: token,
+    "x-lf-usertoken": str(r["x-lf-usertoken"] || r.xLfUsertoken || token),
+    "x-lf-dxrisk-token": str(r["x-lf-dxrisk-token"] || r.xLfDxriskToken),
+    "x-lf-channel": str(r["x-lf-channel"] || r.xLfChannel || "L0"),
+    "x-lf-bu-code": str(r["x-lf-bu-code"] || r.xLfBuCode || "L00602"),
+    "x-lf-dxrisk-source": str(r["x-lf-dxrisk-source"] || r.xLfDxriskSource || "2"),
+  };
+  if (!u.token && !u.cookie) return null;
+  if (!u.userName || u.userName === "微信用户") u.userName = guessName(u);
+  return u;
+}
+function guessName(u) {
+  const m = /(?:^|;\s*)(?:mobile|phone)=(\d{11})/.exec(u.cookie || "");
+  if (m) return m[1].replace(/^(\d{3})\d{4}(\d{4})$/, "$1****$2");
+  const id = /(?:^|;\s*)(?:member_no|member_id|user_id|uid)=([^;]+)/.exec(u.cookie || "");
+  return id ? id[1] : "微信用户";
+}
+function str(v) { return v === undefined || v === null ? "" : String(v).trim(); }
+function cleanCookie(c) {
+  const seen = Object.create(null), order = [];
+  String(c || "").split(";").forEach((seg) => {
+    const i = seg.indexOf("=");
+    const k = (i < 0 ? seg : seg.slice(0, i)).trim();
+    const v = i < 0 ? "" : seg.slice(i + 1).trim();
+    if (!k) return;
+    if (!(k in seen)) order.push(k);
+    seen[k] = v;
+  });
+  return order.map((k) => k + "=" + seen[k]).join("; ");
+}
+function userKey(u) {
+  const m = /(?:^|;\s*)(?:member_no|member_id|user_id|uid|openid|unionid)=([^;]+)/.exec(u.cookie || "");
+  return m ? m[1] : (u.token || u.userName || "default");
+}
+// 同名用户不能作为身份依据；按 Cookie 稳定字段或相同凭证匹配。
+function sameAccount(a, b) {
+  const ids = (u) => {
+    const result = Object.create(null);
+    const aliases = { member_no: "member_no", member_id: "member_id", user_id: "user_id",
+      uid: "uid", openid: "openid", unionid: "unionid", mobile: "phone", phone: "phone" };
+    String(u.cookie || "").split(";").forEach((part) => {
+      const i = part.indexOf("="), key = part.slice(0, i).trim(), value = part.slice(i + 1).trim();
+      if (i > 0 && aliases[key] && value) result[aliases[key]] = value;
+    });
+    return result;
+  };
+  const left = ids(a), right = ids(b);
+  const shared = Object.keys(left).filter((key) => right[key]);
+  if (shared.some((key) => left[key] !== right[key])) return false;
+  if (shared.length) return true;
+  return !!((a.token && a.token === b.token) ||
+    (a["x-lf-usertoken"] && a["x-lf-usertoken"] === b["x-lf-usertoken"]) ||
+    (a.cookie && a.cookie === b.cookie));
+}
+
+function removeExpiredUser(user) {
+  // 重新读取存储，只删除本轮实际使用的旧凭证，避免误删期间更新的账号。
+  const current = loadUsers();
+  const left = current.filter((record) => {
+    const account = normalizeUser(record);
+    return !account || !sameAccount(account, user) || account.token !== user.token ||
+      account["x-lf-usertoken"] !== user["x-lf-usertoken"] || account.cookie !== user.cookie;
+  });
+  if (left.length === current.length) return "旧凭证已被更新或移除";
+  return saveUsers(left) ? "已删除过期账号，请重新抓取" : "过期账号删除失败，请检查存储";
+}
+
+function loadCaptchaToken(u) {
+  const raw = $.getdata(tokenKey);
+  const parsed = $.toObj(raw, {});
+  const store = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  const rec = Object.prototype.hasOwnProperty.call(store, userKey(u)) ? store[userKey(u)] : null;
+  if (!rec || !rec.token) return "";
+  const age = Date.now() - Number(rec.at);
+  if (!Number.isFinite(age) || age < 0 || age > CAPTCHA_TTL) return "";
+  return rec.token;
+}
+function saveCaptchaToken(u, token) {
+  const raw = $.getdata(tokenKey);
+  const parsed = $.toObj(raw, {});
+  const store = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  Object.defineProperty(store, userKey(u), { value: { token: token, at: Date.now() }, enumerable: true, configurable: true, writable: true });
+  $.setdata($.toStr(store) || "{}", tokenKey);
+}
+
+/* ==========================================================================
+ * 五、业务请求头与任务
+ * ========================================================================== */
+function taskHeaders(u, extra, captchaToken) {
+  const h = {
+    "user-agent": UA_MINI,
+    cookie: u.cookie || "",
+    token: u.token,
+    "x-lf-usertoken": u["x-lf-usertoken"],
+    "x-lf-dxrisk-token": u["x-lf-dxrisk-token"],
+    "x-lf-dxrisk-source": u["x-lf-dxrisk-source"],
+    "x-lf-bu-code": u["x-lf-bu-code"],
+    "x-lf-channel": u["x-lf-channel"],
+    "x-gaia-api-key": GAIA_TASK,
+    origin: "https://longzhu.longfor.com",
+    referer: "https://longzhu.longfor.com/",
+    accept: "application/json, text/plain, */*",
+  };
+  if (captchaToken) h["x-lf-dxrisk-captcha-token"] = captchaToken;
+  return Object.assign(h, extra || {});
+}
+function lltHeaders(u, captchaToken) {
+  const h = {
+    "user-agent": UA_APP,
+    cookie: u.cookie || "",
+    authtoken: u["x-lf-usertoken"] || u.token,
+    bucode: u["x-lf-bu-code"],
+    channel: u["x-lf-channel"],
+    "x-gaia-api-key": GAIA_LLT,
+    origin: "https://llt.longfor.com",
+    referer: "https://llt.longfor.com/",
+    accept: "application/json, text/plain, */*",
+  };
+  if (captchaToken) h["x-lf-dxrisk-captcha-token"] = captchaToken;
+  return h;
+}
+function memberHeaders(u) {
+  return {
+    "User-Agent": UA_MINI,
+    Referer: "https://servicewechat.com/wx50282644351869da/424/page-frame.html",
+    token: u.token,
+    "X-Gaia-Api-Key": GAIA_MEMBER,
+    accept: "application/json, text/plain, */*",
+  };
+}
+
+function isRisk(obj) {
+  if (!obj || typeof obj !== "object" || String(obj.code) === "0000") return false;
+  if (obj.code && RISK_CODES.indexOf(String(obj.code)) >= 0) return true;
+  const msg = String(obj.message || obj.msg || "");
+  return !!msg && RISK_PATTERN.test(msg);
+}
+function msgOf(obj) { return obj ? String(obj.message || obj.msg || obj.code || "") : ""; }
+
+/** 签到页信息 */
+async function pageInfo(u, activityNo, captchaToken) {
+  const res = await apiRequest({
+    url: HOST_TASK + "/openapi/task/v1/signature/page-info",
+    method: "POST", headers: taskHeaders(u, null, captchaToken), body: { activity_no: activityNo },
+  });
+  if (isRisk(res)) return { risk: true };
+  return res && String(res.code) === "0000" ? res.data : null;
+}
+function todaySign(info) {
+  if (!info || !Array.isArray(info.seven_days_signs)) return null;
+  const d = new Date(Date.now() + 8 * 3600000);
+  return info.seven_days_signs.find((s) => s && Number(s.sign_year) === d.getUTCFullYear() &&
+    Number(s.sign_month) === d.getUTCMonth() + 1 && Number(s.sign_day) === d.getUTCDate()) || null;
+}
+function signedToday(info) {
+  const today = todaySign(info);
+  return !!today && Number(today.sign_status) === 20;
+}
+
+function describeSign(info, label) {
+  if (!info) return "";
+  const days = Array.isArray(info.seven_days_signs) ? info.seven_days_signs : [];
+  let signed = 0;
+  for (let i = 0; i < days.length; i++) if (Number(days[i].sign_status) === 20) signed++;
+  const t = todaySign(info);
+  const done = t && Number(t.sign_status) === 20;
+  const gifts = ((t && t.sign_rewards) || []).map((r) => r.reward_num + (r.reward_type === 10 ? "珑珠券" : r.reward_type === 30 ? "珑珠" : "成长值")).join("+");
+  return label + "：近7天已签" + signed + "天" + (done ? "，今日已签" : t ? "，今日未签" : "，今日状态未知") + (gifts ? "，今日奖励 " + gifts : "");
+}
+
+/** 签到 */
+async function doClock(u, activityNo, label, captchaToken) {
+  const res = await apiRequest({
+    url: HOST_TASK + "/openapi/task/v1/signature/clock",
+    method: "POST", headers: taskHeaders(u, null, captchaToken), body: { activity_no: activityNo },
+  });
+  if (!res) return 0;
+  if (isRisk(res)) return -1;
+  if (String(res.code) !== "0000") { log($.doFlag[false] + " " + label + "：" + msgOf(res)); return 0; }
+  const d = res.data || {};
+  const rewards = Array.isArray(d.reward_info) ? d.reward_info : [];
+  if (Number(d.is_popup) === 1 && rewards.length) {
+    let total = 0;
+    const details = [];
+    for (const rw of rewards) {
+      if (!rw) continue;
+      const amount = Number(rw.reward_num);
+      if (!Number.isFinite(amount) || amount < 0) continue;
+      const type = Number(rw.reward_type);
+      const unit = type === 10 ? "珑珠券" : type === 30 ? "珑珠" : "奖励类型" + String(rw.reward_type);
+      if (!$.signRewards) $.signRewards = Object.create(null);
+      $.signRewards[unit] = ($.signRewards[unit] || 0) + amount;
+      details.push(amount + " " + unit);
+      total += amount;
+    }
+    log($.doFlag[true] + " " + label + "：签到成功" + (details.length ? "，获得 " + details.join(" + ") : "，奖励数据未知"));
+    return total;
+  }
+  log($.doFlag[true] + " " + label + "：签到请求成功，无新增奖励");
+  return 0;
+}
+
+/** 每个渠道仅处理指定活动号。 */
+async function doSignin(u, label, captchaToken, activityNo) {
+  const acts = [activityNo || ACTIVITY_SIGN_WX];
+  let reward = 0;
+  for (let i = 0; i < acts.length; i++) {
+    const info = await pageInfo(u, acts[i], captchaToken);
+    if (info && info.risk) return { reward: reward, risk: true };
+    if (!info) { log("⛔️ " + label + "：签到状态查询失败"); continue; }
+    log("ℹ️ " + describeSign(info, label));
+    if (signedToday(info)) { log($.doFlag[true] + " " + label + "：今日已签到"); continue; }
+    const r = await doClock(u, acts[i], label, captchaToken);
+    if (r < 0) { log("🛡️ " + label + "：触发风控"); return { reward: reward, risk: true }; }
+    reward += r;
+    if (r > 0) return { reward: reward, risk: false };
+  }
+  return { reward: reward, risk: false };
+}
+
+/** 抽奖签到 + 抽奖 */
+async function doLottery(u, componentNo, activityNo, label, captchaToken) {
+  const res = await apiRequest({
+    url: HOST_LLT + "/api/v1/activity/auth/lottery/sign",
+    method: "POST", headers: lltHeaders(u, captchaToken), body: { component_no: componentNo, activity_no: activityNo },
+  });
+  let risk = false;
+  if (isRisk(res)) { risk = true; log("🛡️ " + label + "签到：触发风控"); }
+  else if (res && String(res.code) === "0000") log($.doFlag[true] + " " + label + "签到：获得 " + ((res.data || {}).chance || 0) + " 次机会");
+  else if (res) log($.doFlag[false] + " " + label + "签到：" + msgOf(res));
+
+  const ch = await apiRequest({
+    url: HOST_LLT + "/api/v1/activity/auth/lottery/chance?component_no=" + encodeURIComponent(componentNo) + "&activity_no=" + encodeURIComponent(activityNo),
+    method: "GET", headers: lltHeaders(u, captchaToken),
+  });
+  if (isRisk(ch)) return { risk: true };
+  if (!ch || String(ch.code) !== "0000") { log("⛔️ " + label + "：抽奖机会查询失败"); return { risk: risk }; }
+  let chance = Number((ch.data || {}).chance);
+  if (!Number.isFinite(chance) || chance < 0 || !Number.isInteger(chance)) {
+    log("⛔️ " + label + "：抽奖机会数据异常"); return { risk: risk };
+  }
+  if (chance <= 0) { log("ℹ️ " + label + "：当前无可用抽奖机会"); return { risk: risk }; }
+  for (let i = 0; i < Math.min(chance, 3); i++) {
+    const d = await apiRequest({
+      url: HOST_LLT + "/api/v1/activity/auth/lottery/click",
+      method: "POST", headers: lltHeaders(u, captchaToken),
+      body: { component_no: componentNo, activity_no: activityNo, batch_no: "" },
+    });
+    if (isRisk(d)) { risk = true; log("🛡️ " + label + "抽奖：触发风控"); break; }
+    if (d && String(d.code) === "0000") {
+      const dd = d.data || {};
+      log($.doFlag[true] + " " + label + "抽奖：获得 " + (dd.reward_name || dd.desc || dd.reward_num || "奖品"));
+    } else { log($.doFlag[false] + " " + label + "抽奖：" + msgOf(d)); break; }
+    await sleep(600);
+  }
+  return { risk: risk };
+}
+
+/** 旧版抽奖兜底 */
+async function doOldLottery(u) {
+  const sign = await apiRequest({
+    url: HOST_TASK + "/openapi/task/v1/lottery/sign",
+    method: "POST", headers: taskHeaders(u, { "x-lf-usertoken": u.token }), body: { task_id: "", activity_no: ACTIVITY_LOTTERY_OLD },
+  });
+  if (sign && String(sign.code) === "0000") {
+    const times = Number((sign.data || {}).ticket_times || 0);
+    log("ℹ️ 旧版抽奖签到：获得 " + times + " 次机会");
+    for (let i = 0; i < Math.min(times, 3); i++) {
+      const r = await apiRequest({
+        url: HOST_TASK + "/openapi/task/v1/lottery/luck",
+        method: "POST", headers: taskHeaders(u, { "x-lf-usertoken": u.token }),
+        body: { task_id: "", time: dateTime(), activity_no: ACTIVITY_LOTTERY_OLD, use_luck: 0 },
+      });
+      if (r && String(r.code) === "0000") log($.doFlag[true] + " 旧版抽奖：获得 " + ((r.data || {}).desc || ""));
+      else break;
+      await sleep(600);
+    }
+  } else if (sign) log("ℹ️ 旧版抽奖：" + msgOf(sign));
+}
+
+/* ==========================================================================
+ * 六、主流程
+ * ========================================================================== */
+async function main() {
+  const users = [];
+  const raw = loadUsers();
+  for (let i = 0; i < raw.length; i++) {
+    const n = normalizeUser(raw[i]);
+    if (n && !users.some((x) => sameAccount(x, n))) users.push(n);
+  }
+  // 只在内存中规范化和去重，不因解析失败覆盖原始账号存储。
+  if (!users.length) {
+    $.msg($.name, "⛔️ 未找到可用账号", "请先打开小程序签到页触发抓包");
+    return;
+  }
+  log("⚙️ 发现 " + users.length + " 个账号");
+
+  for (let idx = 0; idx < users.length; idx++) {
+    const u = users[idx];
+    log("🚀 开始任务：" + u.userName);
+    $.notifyMsg = [];
+    $.ckStatus = true; $.ckExpired = false; $.title = ""; $.signRewards = Object.create(null);
+
+    try {
+      let solverAttempted = false;
+      const refreshCaptcha = async () => {
+        if (solverAttempted || $.ckExpired) return "";
+        solverAttempted = true;
+        return solveSlider(log);
+      };
+      // captcha token：缓存 / 环境变量注入
+      let cap = loadCaptchaToken(u) || $.getdata("lhtj_captcha_token_" + userKey(u)) || $.getdata("lhtj_captcha_token_all") || "";
+      if (cap) log("🔑 使用已缓存的 captcha token");
+
+      // 签到
+      let r1 = await doSignin(u, "每日签到", cap, ACTIVITY_SIGN_WX);
+      let r2 = await doSignin(u, "APP每日签到", cap, ACTIVITY_SIGN_APP);
+
+      // 触发风控时才去走滑块（节省请求）
+      if (r1.risk || r2.risk) {
+        log("🛡️ 触发风控，尝试求解滑块…");
+        cap = await refreshCaptcha();
+        if (cap) {
+          saveCaptchaToken(u, cap);
+          if (r1.risk) r1 = await doSignin(u, "每日签到(验证后)", cap, ACTIVITY_SIGN_WX);
+          if (r2.risk) r2 = await doSignin(u, "APP每日签到(验证后)", cap, ACTIVITY_SIGN_APP);
+        } else {
+          log("⛔️ 滑块未通过，跳过需要验证的步骤");
+        }
+      }
+
+      if ($.ckStatus) {
+        const lot1 = await doLottery(u, component, activity, "微信抽奖", cap);
+        const lot2 = await doLottery(u, component_app, activity_app, "APP抽奖", cap);
+        if (lot1.risk || lot2.risk) {
+          const cap2 = await refreshCaptcha();
+          if (cap2) {
+            saveCaptchaToken(u, cap2);
+            if (lot1.risk) await doLottery(u, component, activity, "微信抽奖(验证后)", cap2);
+            if (lot2.risk) await doLottery(u, component_app, activity_app, "APP抽奖(验证后)", cap2);
+          }
+        }
+        if ($.getdata("lhtj_enable_old_lottery") === "true") await doOldLottery(u);
+
+        // 用户信息 / 珑珠
+        const ui = await apiRequest({ url: HOST_MEMBER + "/api/member/v1/mine-info", method: "POST", headers: memberHeaders(u), body: { channel: u["x-lf-channel"], bu_code: u["x-lf-bu-code"], token: u.token } });
+        const bi = await apiRequest({ url: HOST_MEMBER + "/api/member/v1/balance", method: "POST", headers: memberHeaders(u), body: { channel: u["x-lf-channel"], bu_code: u["x-lf-bu-code"], token: u.token } });
+        const nick = (ui && ui.data && ui.data.nick_name) || u.userName;
+        const growth = ui && String(ui.code) === "0000" && ui.data && ui.data.growth_value != null ? ui.data.growth_value : "查询失败";
+        const level = ui && String(ui.code) === "0000" && ui.data && ui.data.level != null ? ui.data.level : "未知";
+        const balance = bi && String(bi.code) === "0000" && bi.data && bi.data.balance != null ? bi.data.balance : "查询失败";
+        const rewardText = Object.keys($.signRewards).map((unit) => $.signRewards[unit] + " " + unit).join(" + ");
+        $.title = rewardText ? "本次签到获得 " + rewardText : "本次未确认新增签到奖励";
+        $.notifyMsg.push("当前用户：" + nick + "\n成长值：" + growth + "　等级：V" + level + "　珑珠：" + balance);
+      } else {
+        $.notifyMsg.push("⛔️ " + u.userName + "：登录已过期，请重新抓包");
+
+      }
+
+    } catch (e) {
+      log("⛔️ 当前账号执行异常，继续处理其他账号");
+      $.notifyMsg.push("⛔️ 当前账号执行异常，请查看日志");
+    }
+    if ($.ckExpired) $.notifyMsg.push("⛔️ " + removeExpiredUser(u));
+    notifyUser($.notifyMsg.join("\n"));
+    if (idx < users.length - 1) await sleep(1500);
+  }
+}
+
+function notifyUser(content) {
+  if (!content) return;
+  log(($.title || "任务完成") + "\n" + content);
+  $.msg($.name, $.title || "", content, { "media-url": $.avatar });
+}
+
+/* ==========================================================================
+ * 七、Cookie 抓取
+ * ========================================================================== */
+function captureCookie() {
+  if (!$request || String($request.method).toUpperCase() === "OPTIONS") return;
+  const raw = {};
+  const hdrs = $request.headers || {};
+  Object.keys(hdrs).forEach((k) => { raw[k.toLowerCase()] = hdrs[k]; });
+  const cookie = cleanCookie(raw.cookie || "");
+  if (!cookie && !raw.token && !raw["x-lf-usertoken"]) return;
+  const rec = normalizeUser({
+    cookie: cookie,
+    token: raw.token,
+    "x-lf-usertoken": raw["x-lf-usertoken"],
+    "x-lf-dxrisk-token": raw["x-lf-dxrisk-token"],
+    "x-lf-channel": raw["x-lf-channel"],
+    "x-lf-bu-code": raw["x-lf-bu-code"],
+    "x-lf-dxrisk-source": raw["x-lf-dxrisk-source"],
+  });
+  if (!rec) return;
+  const list = loadUsers();
+  let saved = rec, found = false;
+  for (let i = 0; i < list.length; i++) {
+    const old = normalizeUser(list[i]);
+    if (!old || !sameAccount(old, rec)) continue;
+    saved = Object.assign({}, old);
+    Object.keys(rec).forEach((key) => {
+      if (key !== "userName" && raw[key]) saved[key] = rec[key];
+    });
+    // 只捕获到一个 token 头时，同步其兼容字段，避免继续发送旧凭证。
+    if (raw.token || raw["x-lf-usertoken"]) {
+      saved.token = rec.token;
+      saved["x-lf-usertoken"] = rec["x-lf-usertoken"];
+    }
+    list[i] = saved;
+    found = true;
+    // 历史重复记录合并到原位置。
+    for (let j = list.length - 1; j > i; j--) {
+      const other = normalizeUser(list[j]);
+      if (other && sameAccount(other, rec)) list.splice(j, 1);
+    }
+    break;
+  }
+  if (!found) list.push(saved);
+  if (!saveUsers(list)) { $.msg($.name, "⛔️ 保存失败", "账号未写入，请检查 Loon 存储"); return; }
+  const missing = REQUIRED_FIELDS.filter((k) => !saved[k]);
+  $.msg($.name, missing.length ? "⚠️ 部分Cookie已保存" : found ? "🎉 账号凭证已更新" : "🎉 新账号保存成功",
+    missing.length ? "仍缺少：" + missing.join(",") : "当前共 " + list.length + " 个账号");
+}
+
+/* ==========================================================================
+ * 八、Loon Env 兼容层
+ * ========================================================================== */
+function Env(name) {
+  this.name = name;
+  this.isNode = function () { return false; };
+  this.log = function () {
+    const args = Array.prototype.slice.call(arguments);
+    console.log(args.join(" "));
+  };
+  this.logErr = function (e) { console.log("⛔️ " + (e && e.stack ? e.stack : e)); };
+  this.getdata = function (k) {
+    if (typeof $persistentStore !== "undefined") return $persistentStore.read(k);
+    return null;
+  };
+  this.setdata = function (v, k) {
+    if (typeof $persistentStore !== "undefined") return $persistentStore.write(v, k);
+    return false;
+  };
+  this.getjson = function (k, d) { const v = this.getdata(k); if (!v) return d; try { return JSON.parse(v); } catch (e) { return d; } };
+  this.setjson = function (o, k) { return this.setdata(JSON.stringify(o), k); };
+  this.toObj = function (s, d) { try { return JSON.parse(s); } catch (e) { return d === undefined ? null : d; } };
+  this.toStr = function (o, d) {
+    try {
+      if (typeof o === "string") return o;
+      if (typeof JSON !== "undefined" && JSON.stringify) return JSON.stringify(o);
+      return String(o);
+    } catch (e) { return d === undefined ? null : d; }
+  };
+  this.msg = function (title, subtitle, content, opts) {
+    if (typeof $notification !== "undefined") $notification.post(title, subtitle, content || "", opts || {});
+  };
+  let completed = false;
+  this.done = function () {
+    if (completed) return;
+    completed = true;
+    if (typeof $done !== "undefined") { if (isHttpRequest) $done({}); else $done(); }
+  };
+  // 优先官方 $httpClient，保留旧模拟器 $http 兼容。
+  this.http = typeof $httpClient !== "undefined" ? $httpClient : (typeof $http !== "undefined" ? $http : null);
+}
+
+function log(m) { $.log(m); }
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+function dateTime() {
+  const d = new Date(), p = (n) => (n < 10 ? "0" + n : "" + n);
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+// 调试开关：Loon 里把下面改成 true 可看详细日志
+function debug(m) { if (false) console.log("[debug] " + m); }
+
+/* ==========================================================================
+ * 入口
+ * ========================================================================== */
+(async () => {
+  try {
+    if (isHttpRequest) captureCookie();
+    else await main();
+  } catch (e) {
+    console.log("⛔️ 运行异常：" + (e && e.stack ? e.stack : e));
+    $.msg($.name, "⛔️ 脚本异常", String(e && e.message ? e.message : e));
+  } finally {
+    $.done();
+  }
+})();
