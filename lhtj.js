@@ -1106,7 +1106,7 @@ async function solveBySolver(solverUrl, log) {
 
 /**
  * 轻量滑块：取 c1 -> /api/a -> 图片 -> 定位 -> 提交。
- * 外部服务优先；本地实验实现须显式开启，不对真实通过率作保证。
+ * 外部服务优先，未配置或失败时调用内置滑块求解；不保证真实通过率。
  * @returns {Promise<string>} token 形如 "<token>:<c>"，失败返回 ""
  */
 async function solveSlider(log) {
@@ -1117,8 +1117,8 @@ async function solveSlider(log) {
     const ext = await solveBySolver(solverUrl, log);
     if (ext) return ext;
   }
-  if ($.getdata("lhtj_enable_local_solver") !== "true") {
-    log("滑块：请在小程序完成验证或配置外部服务；本地实验求解默认关闭");
+  if ($.getdata("lhtj_enable_local_solver") === "false") {
+    log("滑块：本地求解已被配置关闭");
     return "";
   }
   // 1) 动态凭证
@@ -1337,6 +1337,7 @@ function msgOf(obj) { return obj ? String(obj.message || obj.msg || obj.code || 
 // 本次微信 H5 抓包：C2 / C20400 / 风控来源 5；不改变 APP 分支。
 function createCaptchaSession(u, initialToken, solver) {
   return { token: initialToken || "", attempted: false, pending: null,
+    beginTask() { this.attempted = false; },
     async refresh(rejectedToken) {
       if ($.ckExpired) return "";
       if (this.token && this.token !== rejectedToken) return this.token;
@@ -1695,11 +1696,13 @@ async function main() {
       // 签到
       let r1 = await doSignin(u, "微信签到", cap, ACTIVITY_SIGN_WX);
       $.results.wx = r1;
+      $.captchaSession.beginTask();
       let r2 = await doSignin(u, "APP签到", cap, ACTIVITY_SIGN_APP);
 
       $.results.wx = r1; $.results.app = r2;
       if ($.ckStatus) {
         // APP 福利抽奖（微信抽奖活动已结束，相关代码已移除）
+        $.captchaSession.beginTask();
         const lot = await doLottery(u, component_app, activity_app, "APP抽奖", cap);
         $.results.lottery = lot;
         if ($.getdata("lhtj_enable_old_lottery") === "true") $.results.legacy = await doOldLottery(u);
@@ -1738,7 +1741,7 @@ function formatAccountResult(u) {
   Object.keys(names).forEach((key) => {
     const r = $.results[key];
     let message = "未执行";
-    if (r) message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续需要验证" : "需要验证，已停止") :
+    if (r) message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续滑块验证未通过" : "滑块验证未通过，本项未完成") :
       (r.message || (r.done === false ? "未完成" : r.done ? "已完成" : "结果未知"));
     lines.push(names[key] + "：" + safeLogText(message));
   });
