@@ -671,8 +671,8 @@ class UaGen {
   reloadSA() { this.counters.sa = 0; this._sa = []; }
   sendTemp(e) {
     if (e && typeof e === "object") e = JSON.stringify(e);
-    // 插件：process(g(e.length), h(e)) —— 注意长度是"字符数两字节 + UTF8 长度"的拼接
-    this.app(10, encTemp(this.process(UaGen.bytes(g(e.length), UaGen.utf8(e)))));
+    // 原始插件：两字节大端字符长度 + 字符字节；不得将长度数组转成整数。
+    this.app(10, encTemp(this.process(g(e.length), h(e))));
   }
   static rand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
   /** 等价于插件的 bufFn：返回 [bufferLength, bytes...] */
