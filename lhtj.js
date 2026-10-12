@@ -1156,13 +1156,24 @@ async function solveSlider(log) {
       readBinary(SLIDER_HOST + ch.p2, Object.assign({}, headers, { Accept: "image/*,*/*;q=0.8" }))
     ]);
     const p1 = images[0], p2 = images[1];
-    const bg = decodeImage(p1);
-    const piece = decodeImage(p2);
-    if (bg && piece) {
-      const loc = locateGap(bg, piece, y, ch.o);
-      if (loc) { x = Math.round(loc.x); from = loc.from + "/" + loc.score.toFixed(2); }
-    }
-  } catch (e) { log("滑块：图片处理失败 " + e); }
+    if (!p1 || !p1.length) return failed("背景图片下载失败");
+    if (!p2 || !p2.length) return failed("拼图图片下载失败");
+    const format = (bytes) => {
+      if (bytes[0] === 0xff && bytes[1] === 0xd8) return "JPEG";
+      if (bytes[0] === 0x89 && bytes[1] === 0x50) return "PNG" + (bytes.length >= 29 ? "，位深=" + bytes[24] + "，类型=" + bytes[25] + "，交错=" + bytes[28] : "");
+      if (bytes[0] === 82 && bytes[1] === 73 && bytes[8] === 87 && bytes[9] === 69) return "WebP";
+      return "非支持图片格式";
+    };
+    let bg, piece;
+    try { bg = decodeImage(p1); } catch (e) { return failed("背景解码异常（" + format(p1) + "）"); }
+    if (!bg) return failed("背景解码不支持（" + format(p1) + "）");
+    try { piece = decodeImage(p2); } catch (e) { return failed("拼图解码异常（" + format(p2) + "）"); }
+    if (!piece) return failed("拼图解码不支持（" + format(p2) + "）");
+    if (!piece.alpha) return failed("拼图缺少透明轮廓（" + format(p2) + "）");
+    const loc = locateGap(bg, piece, y, ch.o);
+    if (!loc) return failed("图片已解码，缺口未达到匹配阈值（背景" + bg.w + "×" + bg.h + "，拼图" + piece.w + "×" + piece.h + "）");
+    x = Math.round(loc.x); from = loc.from + "/" + loc.score.toFixed(2);
+  } catch (e) { return failed("图片读取或缺口匹配过程异常"); }
   if (!Number.isFinite(x) || x <= 0) { log("滑块：无可靠定位，停止提交"); return failed("滑块图片解码或定位失败"); }
 
   // 用插件算法生成 ac
@@ -1431,6 +1442,7 @@ async function doWxSignin(u, label, captchaToken) {
   const reward = await doClock(u, ACTIVITY_SIGN_WX, label, captchaToken);
   if (reward < 0) return result("risk", "需要验证", 0, true);
   if (reward > 0) return result("signed", "签到成功，新增奖励见汇总", reward);
+  const clockFailure = $.clockFailure;
   // is_popup=0 仅代表不弹窗；不能独立判定签到成功或已签到。
   const after = await pageInfo(u, ACTIVITY_SIGN_WX, captchaToken);
   if (after && after.risk) return result("risk", "状态复查需要验证", 0, true);
@@ -1439,7 +1451,7 @@ async function doWxSignin(u, label, captchaToken) {
     const received = receivedRewardText(after);
     return result("confirmed", "今日已签到（复查确认）" + (received ? "，今日已领取 " + received : ""));
   }
-  return result("unknown", "未确认签到成功，未重复提交");
+  return result("unknown", clockFailure || "签到接口成功但今日状态未确认，未重复提交");
 }
 
 /** 签到页信息 */
@@ -1479,9 +1491,14 @@ async function doClock(u, activityNo, label, captchaToken) {
     url: HOST_TASK + "/openapi/task/v1/signature/clock",
     method: "POST", body: { activity_no: activityNo },
   }, (token) => signatureHeaders(u, activityNo, token), $.captchaSession, captchaToken);
-  if (!res) return 0;
+  $.clockFailure = "";
+  if (!res) { $.clockFailure = "签到请求网络、HTTP或解析失败"; return 0; }
   if (isRisk(res)) return -1;
-  if (String(res.code) !== "0000") { log($.doFlag[false] + " " + label + "：" + msgOf(res)); return 0; }
+  if (String(res.code) !== "0000") {
+    const code = /^[a-zA-Z0-9_-]{1,24}$/.test(String(res.code)) ? String(res.code) : "未知";
+    $.clockFailure = "签到接口拒绝（code=" + code + "）";
+    log($.clockFailure); return 0;
+  }
   const d = res.data || {};
   const rewards = Array.isArray(d.reward_info) ? d.reward_info : [];
   if (Number(d.is_popup) === 1 && rewards.length) {
@@ -1515,10 +1532,11 @@ async function doSignin(u, label, captchaToken, activityNo) {
   const reward = await doClock(u, activityNo, label, captchaToken);
   if (reward < 0) return { risk: true, message: "需要验证" };
   if (reward > 0) return { status: "signed", message: "签到成功，新增奖励见汇总", reward: reward };
+  const clockFailure = $.clockFailure;
   const after = await pageInfo(u, activityNo, captchaToken);
   if (after && after.risk) return { risk: true, message: "状态复查需要验证" };
   return signedToday(after) ? { status: "confirmed", message: "今日已签到（复查确认）", reward: 0 } :
-    { status: "unknown", message: "未确认签到成功，未重复提交", reward: 0 };
+    { status: "unknown", message: clockFailure || "签到接口成功但今日状态未确认，未重复提交", reward: 0 };
 }
 
 /**
