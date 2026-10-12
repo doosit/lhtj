@@ -707,6 +707,7 @@ function createAc(o) {
     version: o.version || "-1",
     sys: o.sys,
   });
+  gen.start();
   // sendTemp：插件里是 sendTemp("x=" + A + "&y=" + u)
   gen.sendTemp("x=" + Number(o.x || 0) + "&y=" + Number(o.y || 0));
   return gen.getUA();
@@ -726,6 +727,7 @@ function buildAcPlugin(sid, x, y, sysInfo) {
       windowWidth: 375, windowHeight: 724, model: "iPhone", platform: "ios",
     },
   });
+  gen.start();
   // 模拟滑动行为：一批位移采样 + 一次触摸开始/结束
   const steps = 12;
   const base = 760;
@@ -1110,6 +1112,8 @@ async function solveBySolver(solverUrl, log) {
  * @returns {Promise<string>} token 形如 "<token>:<c>"，失败返回 ""
  */
 async function solveSlider(log) {
+  $.sliderFailure = "";
+  const failed = (reason) => { $.sliderFailure = reason; return ""; };
   // 0) 外部求解服务（可选）：在 Loon 里配置 config 键 lhtj_solver_url 即可启用
   //    服务端约定：POST JSON {sid, aid, c, y, p1, p2} -> {token} 或 {token, c}
   const solverUrl = $.getdata("lhtj_solver_url");
@@ -1119,12 +1123,14 @@ async function solveSlider(log) {
   }
   if ($.getdata("lhtj_enable_local_solver") === "false") {
     log("滑块：本地求解已被配置关闭");
-    return "";
+    return failed("本地滑块被配置关闭");
   }
+  // 同一验证会话的设备凭证、挑战、提交使用同一个 aid。
+  const aid = makeAid();
   // 1) 动态凭证
   let constId = "";
   try {
-    const t = await httpReq({ url: constIdUrl(makeAid()), timeout: 10000 });
+    const t = await httpReq({ url: constIdUrl(aid), timeout: 10000 });
     const text = (t && t.body) || "";
     const un = String(text).replace(/&quot;/g, '"');
     const m = un.match(/"data"\s*:\s*"([^"]+)"/);
@@ -1136,13 +1142,12 @@ async function solveSlider(log) {
     Origin: "https://longzhu.longfor.com",
     Accept: "*/*",
   };
-  const aid = makeAid();
   const q = "?w=300&h=150&s=50&ak=" + SLIDER_AK + "&c=" + encodeURIComponent(constId) + "&jsv=" + SLIDER_JSV
     + "&aid=" + encodeURIComponent(aid) + "&wp=1&de=0&uid=&lf=0&tpc=&_r=" + Math.random();
   const chRes = await httpReq({ url: SLIDER_HOST + "/api/a" + q, headers: headers, timeout: 10000 });
   let ch = null;
   try { ch = JSON.parse(chRes.body); } catch (e) { }
-  if (!ch || !ch.sid) { log("滑块：取挑战失败"); return ""; }
+  if (!ch || !ch.sid) { log("滑块：取挑战失败"); return failed("滑块挑战获取失败"); }
 
   let x = 0, y = Number(ch.y || 0), from = "";
   try {
@@ -1158,11 +1163,12 @@ async function solveSlider(log) {
       if (loc) { x = Math.round(loc.x); from = loc.from + "/" + loc.score.toFixed(2); }
     }
   } catch (e) { log("滑块：图片处理失败 " + e); }
-  if (!Number.isFinite(x) || x <= 0) { log("滑块：无可靠定位，停止提交"); return ""; }
+  if (!Number.isFinite(x) || x <= 0) { log("滑块：无可靠定位，停止提交"); return failed("滑块图片解码或定位失败"); }
 
   // 用插件算法生成 ac
   let ac = "";
   try { ac = buildAcPlugin(ch.sid, x, y); } catch (e) { log("滑块：ac 生成失败 " + e); }
+  if (!ac) return failed("滑块验证数据生成失败");
   log("滑块：定位 dx=" + x + " -> 提交 x=" + (Math.round(x) + 10) + " y=" + y + " (" + from + "), ac=" + (ac ? ac.length + "B" : "无"));
   // 提交：x 按插件公式 A = round(dx) + 10
   // 注意：ac 里 sendTemp 的 x/y 必须与提交值完全一致（插件源码 _getVerifyParams 保证）
@@ -1173,7 +1179,8 @@ async function solveSlider(log) {
   try { v = JSON.parse(vr.body); } catch (e) { }
   if (v && v.success && v.token) return v.token + ":" + constId;
   log("滑块：未通过（" + ((v && (v.code || v.msg)) || "无响应") + "）");
-  return "";
+  const code = v && /^[0-9]{1,10}$/.test(String(v.code)) ? String(v.code) : "未知";
+  return failed("滑块服务器未通过（code=" + code + "）");
 }
 
 /* ==========================================================================
@@ -1337,7 +1344,7 @@ function msgOf(obj) { return obj ? String(obj.message || obj.msg || obj.code || 
 // 本次微信 H5 抓包：C2 / C20400 / 风控来源 5；不改变 APP 分支。
 function createCaptchaSession(u, initialToken, solver) {
   return { token: initialToken || "", attempted: false, pending: null,
-    beginTask() { this.attempted = false; },
+    beginTask() { this.attempted = false; this.failureReason = ""; },
     async refresh(rejectedToken) {
       if ($.ckExpired) return "";
       if (this.token && this.token !== rejectedToken) return this.token;
@@ -1346,7 +1353,10 @@ function createCaptchaSession(u, initialToken, solver) {
       this.attempted = true;
       this.pending = (async () => {
         const fresh = await (solver ? solver() : solveSlider(log));
-        if (!fresh || fresh === rejectedToken) return "";
+        if (!fresh || fresh === rejectedToken) {
+          this.failureReason = fresh ? "求解返回的验证码未更新" : ($.sliderFailure || "未取得有效滑块 token");
+          return "";
+        }
         this.token = fresh;
         saveCaptchaToken(u, fresh);
         return fresh;
@@ -1362,6 +1372,7 @@ async function requestWithCaptcha(options, headersForToken, session, fallbackTok
   const fresh = await session.refresh(sentToken);
   if (fresh && fresh !== sentToken) {
     response = await apiRequest(Object.assign({}, options, { headers: headersForToken(fresh) }));
+    if (isRisk(response)) session.failureReason = "滑块已返回 token，但业务接口仍拒绝验证";
   }
   return response;
 }
@@ -1695,15 +1706,18 @@ async function main() {
 
       // 签到
       let r1 = await doSignin(u, "微信签到", cap, ACTIVITY_SIGN_WX);
+      r1.verification = $.captchaSession.failureReason;
       $.results.wx = r1;
       $.captchaSession.beginTask();
       let r2 = await doSignin(u, "APP签到", cap, ACTIVITY_SIGN_APP);
 
+      r2.verification = $.captchaSession.failureReason;
       $.results.wx = r1; $.results.app = r2;
       if ($.ckStatus) {
         // APP 福利抽奖（微信抽奖活动已结束，相关代码已移除）
         $.captchaSession.beginTask();
         const lot = await doLottery(u, component_app, activity_app, "APP抽奖", cap);
+        lot.verification = $.captchaSession.failureReason;
         $.results.lottery = lot;
         if ($.getdata("lhtj_enable_old_lottery") === "true") $.results.legacy = await doOldLottery(u);
 
@@ -1743,6 +1757,7 @@ function formatAccountResult(u) {
     let message = "未执行";
     if (r) message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续滑块验证未通过" : "滑块验证未通过，本项未完成") :
       (r.message || (r.done === false ? "未完成" : r.done ? "已完成" : "结果未知"));
+    if (r && r.risk && r.verification) message += "；" + r.verification;
     lines.push(names[key] + "：" + safeLogText(message));
   });
   const rewards = Object.keys($.signRewards).map((unit) => $.signRewards[unit] + " " + unit).join(" + ");
