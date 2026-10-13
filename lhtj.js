@@ -1293,6 +1293,7 @@ async function solveSlider(log) {
   try { ch = JSON.parse(chRes.body); } catch (e) { }
   if (!ch || !ch.sid) { log("滑块：取挑战失败"); return failed("滑块挑战获取失败"); }
 
+  progress("已获取挑战，处理图片");
   let x = 0, y = Number(ch.y || 0), from = "";
   try {
     const images = await Promise.all([
@@ -1329,6 +1330,7 @@ async function solveSlider(log) {
   // 注意：ac 里 sendTemp 的 x/y 必须与提交值完全一致（插件源码 _getVerifyParams 保证）
   const submitX = Math.round(x);
   const body = queryStr({ ac: ac, ak: SLIDER_AK, c: constId, uid: "", jsv: SLIDER_JSV, sid: ch.sid, aid: aid, x: submitX, y: y });
+  progress("提交 H5 滑块验证");
   const vr = await httpReq({ url: SLIDER_HOST + "/api/v1", method: "POST", headers: Object.assign({}, headers, { "Content-Type": "application/x-www-form-urlencoded" }), body: body, timeout: 12000 });
   let v = null;
   try { v = JSON.parse(vr.body); } catch (e) { }
@@ -1524,8 +1526,10 @@ async function requestWithCaptcha(options, headersForToken, session, fallbackTok
   const sentToken = session ? session.token : (fallbackToken || "");
   let response = await apiRequest(Object.assign({}, options, { headers: headersForToken(sentToken) }));
   if (!session || !isRisk(response) || $.ckExpired) return response;
+  progress("需要滑块验证，正在求解");
   const fresh = await session.refresh(sentToken);
   if (fresh && fresh !== sentToken) {
+    progress("已取得验证结果，重试当前请求");
     response = await apiRequest(Object.assign({}, options, { headers: headersForToken(fresh) }));
     if (isRisk(response)) session.failureReason = "滑块已返回 token，但业务接口仍拒绝验证";
   }
@@ -1586,6 +1590,7 @@ async function doWxSignin(u, label, captchaToken) {
   const reward = await doClock(u, ACTIVITY_SIGN_WX, label, captchaToken);
   if (reward < 0) return result("risk", "需要验证", 0, true);
   if (reward > 0) return result("signed", "签到成功，新增奖励见汇总", reward);
+  if ($.clockAlready) return result("already", "今日已签到");
   const clockFailure = $.clockFailure;
   // is_popup=0 仅代表不弹窗；不能独立判定签到成功或已签到。
   const after = await pageInfo(u, ACTIVITY_SIGN_WX, captchaToken);
@@ -1609,7 +1614,8 @@ async function pageInfo(u, activityNo, captchaToken) {
 }
 function todaySign(info) {
   if (!info || !Array.isArray(info.seven_days_signs)) return null;
-  const d = new Date(Date.now() + 8 * 3600000);
+  const serverTime = Number(info.current_date_time);
+  const d = new Date((Number.isFinite(serverTime) && serverTime > 0 ? serverTime : Date.now()) + 8 * 3600000);
   return info.seven_days_signs.find((s) => s && Number(s.sign_year) === d.getUTCFullYear() &&
     Number(s.sign_month) === d.getUTCMonth() + 1 && Number(s.sign_day) === d.getUTCDate()) || null;
 }
@@ -1629,18 +1635,28 @@ function describeSign(info, label) {
   return label + "：近7天已签" + signed + "天" + (done ? "，今日已签" : t ? "，今日未签" : "，今日状态未知") + (gifts ? "，今日奖励 " + gifts : "");
 }
 
+function isAlreadySignedResponse(response) {
+  if (!response || typeof response !== "object") return false;
+  // 未证实 801810 的含义，不按这个码单独认定已签到。
+  const message = String(response.message || response.msg || "").trim();
+  return !/未签到|未签|尚未|还未|不能|无法/.test(message) &&
+    /今日已签到|今天已签到|已签到|已经签到|重复签到|已完成.*签到/.test(message);
+}
+
 /** 签到 */
 async function doClock(u, activityNo, label, captchaToken) {
   const res = await requestWithCaptcha({
     url: HOST_TASK + "/openapi/task/v1/signature/clock",
     method: "POST", body: { activity_no: activityNo },
   }, (token) => signatureHeaders(u, activityNo, token), $.captchaSession, captchaToken);
-  $.clockFailure = "";
+  $.clockFailure = ""; $.clockAlready = false;
   if (!res) { $.clockFailure = "签到请求网络、HTTP或解析失败"; return 0; }
+  if (isAlreadySignedResponse(res)) { $.clockAlready = true; return 0; }
   if (isRisk(res)) return -1;
   if (String(res.code) !== "0000") {
     const code = /^[a-zA-Z0-9_-]{1,24}$/.test(String(res.code)) ? String(res.code) : "未知";
-    $.clockFailure = "签到接口拒绝（code=" + code + "）";
+    const message = safeLogText(res.message || res.msg || "");
+    $.clockFailure = (message || "未完成") + "（code=" + code + "）";
     log($.clockFailure); return 0;
   }
   const d = res.data || {};
@@ -1676,6 +1692,7 @@ async function doSignin(u, label, captchaToken, activityNo) {
   const reward = await doClock(u, activityNo, label, captchaToken);
   if (reward < 0) return { risk: true, message: "需要验证" };
   if (reward > 0) return { status: "signed", message: "签到成功，新增奖励见汇总", reward: reward };
+  if ($.clockAlready) return { status: "already", message: "今日已签到", reward: 0 };
   const clockFailure = $.clockFailure;
   const after = await pageInfo(u, activityNo, captchaToken);
   if (after && after.risk) return { risk: true, message: "状态复查需要验证" };
@@ -1859,32 +1876,43 @@ async function main() {
   for (let idx = 0; idx < users.length; idx++) {
     const u = users[idx];
     $.accountIndex = (idx + 1) + "/" + users.length;
-    $.results = {}; $.accountInfo = null; $.accountError = ""; $.captchaSession = null;
+    $.results = {}; $.accountInfo = null; $.accountError = ""; $.captchaSession = null; $.streamedTasks = Object.create(null); $.currentTask = "";
     $.notifyMsg = [];
     $.ckStatus = true; $.ckExpired = false; $.title = ""; $.signRewards = Object.create(null);
 
     try {
+      $.log("龙湖天街 · 账号 " + $.accountIndex + " · " + safeLogText(u.userName));
       // captcha token：缓存 / 环境变量注入
       let cap = loadCaptchaToken(u) || $.getdata("lhtj_captcha_token_" + userKey(u)) || $.getdata("lhtj_captcha_token_all") || "";
       $.captchaSession = createCaptchaSession(u, cap);
       if (cap) log("🔑 使用已缓存的 captcha token");
 
       // 签到
+      $.currentTask = "微信签到";
       let r1 = await doSignin(u, "微信签到", cap, ACTIVITY_SIGN_WX);
       r1.verification = $.captchaSession.failureReason;
       $.results.wx = r1;
+      streamTaskResult("wx", "微信签到", r1);
       $.captchaSession.beginTask();
+      $.currentTask = "APP签到";
       let r2 = await doSignin(u, "APP签到", cap, ACTIVITY_SIGN_APP);
 
       r2.verification = $.captchaSession.failureReason;
       $.results.wx = r1; $.results.app = r2;
+      streamTaskResult("app", "APP签到", r2);
       if ($.ckStatus) {
         // APP 福利抽奖（微信抽奖活动已结束，相关代码已移除）
         $.captchaSession.beginTask();
+        $.currentTask = "APP抽奖";
         const lot = await doLottery(u, component_app, activity_app, "APP抽奖", cap);
         lot.verification = $.captchaSession.failureReason;
         $.results.lottery = lot;
-        if ($.getdata("lhtj_enable_old_lottery") === "true") $.results.legacy = await doOldLottery(u);
+        streamTaskResult("lottery", "APP抽奖", lot);
+        if ($.getdata("lhtj_enable_old_lottery") === "true") {
+          $.currentTask = "旧版抽奖";
+          $.results.legacy = await doOldLottery(u);
+          streamTaskResult("legacy", "旧版抽奖", $.results.legacy);
+        }
 
         // 用户信息 / 珑珠
         const ui = await apiRequest({ url: HOST_MEMBER + "/api/member/v1/mine-info", method: "POST", headers: memberHeaders(u), body: { channel: u["x-lf-channel"], bu_code: u["x-lf-bu-code"], token: u.token } });
@@ -1907,9 +1935,31 @@ async function main() {
     }
     if ($.ckExpired) $.accountError = "登录已过期；" + removeExpiredUser(u);
     $.captchaSession = null;
-    notifyUser(formatAccountResult(u));
+    const summary = formatAccountResult(u);
+    const taskNames = { wx: "微信签到", app: "APP签到", lottery: "APP抽奖" };
+    Object.keys(taskNames).forEach((key) => { if (!$.streamedTasks[key]) streamTaskResult(key, taskNames[key], $.results[key]); });
+    summary.split("\n").filter((line) => /^(新增签到奖励|账户|提示)：/.test(line)).forEach((line) => $.log(line));
+    $.currentTask = "";
+    notifyUser(summary);
     if (idx < users.length - 1) await sleep(1500);
   }
+}
+
+function taskResultText(r) {
+  if (!r) return "未执行";
+  let message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续滑块验证未通过" : "滑块验证未通过，本项未完成") :
+    (r.message || (r.done === false ? "未完成" : r.done ? "已完成" : "结果未知"));
+  if (r.risk && r.verification) message += "；" + r.verification;
+  return safeLogText(message);
+}
+function streamTaskResult(key, name, result) {
+  if (!$.streamedTasks) $.streamedTasks = Object.create(null);
+  if ($.streamedTasks[key]) return;
+  $.streamedTasks[key] = true;
+  $.log(name + "：" + taskResultText(result));
+}
+function progress(message) {
+  if ($.currentTask) $.log("验证进度 · " + $.currentTask + "：" + safeLogText(message));
 }
 
 function formatAccountResult(u) {
@@ -1919,10 +1969,7 @@ function formatAccountResult(u) {
   if ($.results.legacy) names.legacy = "旧版抽奖";
   Object.keys(names).forEach((key) => {
     const r = $.results[key];
-    let message = "未执行";
-    if (r) message = r.risk ? (r.result ? "已抽奖：" + r.result + "；后续滑块验证未通过" : "滑块验证未通过，本项未完成") :
-      (r.message || (r.done === false ? "未完成" : r.done ? "已完成" : "结果未知"));
-    if (r && r.risk && r.verification) message += "；" + r.verification;
+    const message = taskResultText(r);
     lines.push(names[key] + "：" + safeLogText(message));
   });
   const rewards = Object.keys($.signRewards).map((unit) => $.signRewards[unit] + " " + unit).join(" + ");
@@ -1935,7 +1982,6 @@ function formatAccountResult(u) {
 
 function notifyUser(content) {
   if (!content) return;
-  $.log(content);
   $.msg($.name, $.title || "", content, { "media-url": $.avatar });
 }
 
